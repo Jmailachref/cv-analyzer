@@ -58,6 +58,7 @@ def test_an_offer_gets_a_grid_built_from_its_skills(client):
         ("sql", 0.5, 0.0),
         ("docker", 0.1, 0.0),
     ]
+    assert [c["level"] for c in grid["criteria"]] == [1, 2, 3]
 
 
 def test_changing_skills_keeps_the_grid_a_recruiter_edited(client):
@@ -73,6 +74,7 @@ def test_changing_skills_keeps_the_grid_a_recruiter_edited(client):
     assert (by_id["sql"]["points_present"], by_id["sql"]["points_absent"]) == (1.0, -20.0)
     assert "docker" not in by_id and by_id["go"]["points_present"] == 0.1
     assert by_id["airflow"]["points_present"] == 3
+    assert (by_id["python"]["level"], by_id["sql"]["level"], by_id["airflow"]["level"]) == (1, 1, None)
     rebuilt = create_offer(client, body={"title": "Data scientist", "skills": skills, "rebuild": True})
     assert [c["id"] for c in rebuilt["criteria"]] == ["sql", "python", "go"]
     assert rebuilt["criteria"][1]["terms"] == []

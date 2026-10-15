@@ -31,7 +31,7 @@ def grid_from(skills: list[dict]) -> list[dict]:
         present, absent = PRIORITY_POINTS[skill["priority"]]
         criteria.append(
             {"id": slug(skill["name"]), "label": skill["name"], "terms": [], "default_synonyms": True,
-             "points_present": present, "points_absent": absent}
+             "points_present": present, "points_absent": absent, "level": skill["priority"]}
         )
     return criteria
 
@@ -51,7 +51,7 @@ def regrid(old_skills: list[dict], old_criteria: list[dict], skills: list[dict])
             if old["id"] not in position:
                 position[old["id"]] = len(criteria)
                 criteria.append(old)
-        elif old != default and old["id"] in position:
+        elif {**default, **old} != default and old["id"] in position:  # grids saved before levels have none
             criteria[position[old["id"]]] = old
     return criteria
 

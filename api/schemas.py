@@ -23,6 +23,7 @@ class Criterion(BaseModel):
     default_synonyms: bool = Field(default=True, description="Also search the engine's synonyms for the label")
     points_present: float = Field(default=1.0, ge=0, le=50, description="Points when found")
     points_absent: float = Field(default=0.0, ge=-50, le=0, description="Points lost when missing (core skills)")
+    level: int | None = Field(default=None, ge=1, le=5, description="1 essential, 2 important, 3 secondary, 4 CV only, 5 bonus")
 
 
 class SkillIn(BaseModel):
