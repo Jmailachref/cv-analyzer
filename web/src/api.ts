@@ -6,7 +6,6 @@ export type Skill = { name: string; priority: number };
 export type Criterion = {
   id: string;
   label: string;
-  kind: "skill" | "alert";
   terms: string[];
   default_synonyms: boolean;
   points_present: number;
@@ -21,7 +20,6 @@ export type Offer = {
   external_ref: string;
   title: string;
   skills: Skill[];
-  alerts: string[];
   grid_version: number;
   criteria: Criterion[];
   settings: GridSettings;
@@ -32,7 +30,6 @@ export type Offer = {
 export type OfferIn = {
   title: string;
   skills: Skill[];
-  alerts: string[];
   criteria?: Criterion[] | null;
   settings?: GridSettings;
 };
@@ -93,7 +90,6 @@ export type HighlightIn = {
 export type CriterionResult = {
   id: string;
   label: string;
-  kind: "skill" | "alert";
   found: boolean;
   points: number;
   lines: number[];
@@ -121,6 +117,7 @@ export type Score = {
   manual: number | null;
   final: number | null;
   manual_points: number;
+  settings: GridSettings;
   analysis: Analysis | null;
   highlights: Highlight[];
 };

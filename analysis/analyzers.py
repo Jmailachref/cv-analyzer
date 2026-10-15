@@ -83,7 +83,6 @@ class KeywordAnalyzer:
                 {
                     "id": c["id"],
                     "label": c["label"],
-                    "kind": c.get("kind", "skill"),
                     "found": found,
                     "points": points,
                     "lines": sorted(hits),

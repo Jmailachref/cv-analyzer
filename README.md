@@ -62,7 +62,7 @@ curl -H "Authorization: Bearer dev-key" -F file=@cv.pdf -F offer_ref=offer-1 -F 
    `ready`, `unreadable` (nothing to read, even with OCR) or `failed`.
 4. **Score.** The worker scores the CV against its offer's grid at once.
    When the grid changes, every CV read for the offer is scored again.
-5. **Highlight.** A recruiter marks passages worth 1 to 5 points each.
+5. **Highlight.** A recruiter marks passages worth 1 to 20 points each.
 6. **Read the result.** `GET /v1/documents/{id}/score` or
    `GET /v1/offers/{ref}/ranking`.
 
@@ -77,13 +77,12 @@ however often it appears.
 
 | Field | Meaning |
 |---|---|
-| `kind` | `skill` (wanted) or `alert` (a warning word, such as `stage` for a senior role) |
-| `points_present` | points when found; negative only for alerts |
-| `points_absent` | points when missing, 0 or negative (skills only) |
+| `points_present` | points when found, 0 or more |
+| `points_absent` | points when missing, 0 or negative |
 
 `PUT /v1/offers/{ref}` builds the grid from the offer's skills ranked 1 to 5,
 as RecruteHub's offers rank them (a skill's `name` can also be sent as
-RecruteHub's `language`), and its warning words (`alerts`):
+RecruteHub's `language`). Only a missing core skill costs points:
 
 | Priority | Present | Missing |
 |---|---|---|
@@ -92,7 +91,6 @@ RecruteHub's `language`), and its warning words (`alerts`):
 | 3 secondary | +0.1 | 0 |
 | 4 CV only | +0.5 | 0 |
 | 5 bonus | +0.1 | 0 |
-| warning word | -5 | 0 |
 
 A recruiter can then edit that grid (other words, other points) and send it
 back as `criteria` in the same PUT; the grid is then taken as given. Each
@@ -105,8 +103,8 @@ All three are out of 100.
 
 - **auto** = max(0, gained / possible × 100 − min(`penalty_cap`, penalties)).
   `possible` is the sum of the positive points of the grid, `gained` the
-  part found, `penalties` what missing skills and present alerts cost.
-  `penalty_cap` is 50 by default. A grid with only alerts starts from 100.
+  part found, `penalties` what missing skills cost. `penalty_cap` is 50 by
+  default. A grid with nothing to gain starts from 100.
 - **manual** = min(highlight points, `manual_cap`) / `manual_cap` × 100, so
   20 points (the default cap) make 100. Null until someone highlights.
 - **final** = `auto_weight` × auto + (1 − `auto_weight`) × manual, 0.6 by
@@ -121,14 +119,15 @@ they never reject anyone on their own. That decision stays with a person
 
 A React app (`web/`) the API serves under `/app`, for recruiters:
 
-- **Offers**: create an offer with its skills ranked 1 to 5 and its warning
-  words, and adjust the grid it builds (more words per criterion, other
-  points).
+- **Offers**: create an offer with its skills ranked 1 to 5, and adjust the
+  grid it builds (more words per criterion, other points).
 - **Candidates**: drop CVs (several at once), then follow the ranking as they
   are read and scored: automatic, recruiter and final scores, and the core
   skills each CV is missing.
-- **A CV**: the PDF itself. Select a passage, give it +1 to +5 and a comment;
-  it stays highlighted on the PDF and counts in the recruiter score at once.
+- **A CV**: the PDF itself. Select a passage, type the points it is worth
+  (1 to 20) and a comment; it stays highlighted on the PDF and counts in the
+  recruiter score at once. The score panel explains how the final score is
+  made.
   Hovering a skill the engine found outlines the lines it was found on. A
   scanned CV is scored from the text OCR read, line by line.
 
@@ -151,7 +150,7 @@ like `{"error": {"code": "not_found", "message": "..."}}`.
 | Route | What it does |
 |---|---|
 | `GET /v1/offers` | the offers, last updated first, with their number of CVs |
-| `PUT /v1/offers/{ref}` | create or update an offer: `title`, `skills`, `alerts`, optional `criteria` and `settings`; rescores its CVs when the grid changes |
+| `PUT /v1/offers/{ref}` | create or update an offer: `title`, `skills`, optional `criteria` and `settings`; rescores its CVs when the grid changes |
 | `GET /v1/offers/{ref}` | the offer and its latest grid |
 | `DELETE /v1/offers/{ref}` | erase the offer and every CV sent for it |
 | `GET /v1/offers/{ref}/ranking` | the offer's CVs, best final score first, with missing core skills |
@@ -162,7 +161,7 @@ like `{"error": {"code": "not_found", "message": "..."}}`.
 | `DELETE /v1/documents/{id}` | erase the PDF, text, scores and highlights |
 | `POST /v1/documents/{id}/analyses` | score now against the offer's latest grid (`analyzer`) |
 | `GET /v1/documents/{id}/analyses` | every score the CV got, across grid versions and analyzers |
-| `POST /v1/documents/{id}/highlights` | highlight a passage: the `quote` selected in the PDF and its `page`, `start` and `end` in the text, or a `line`; `points` 1 to 5, `author_ref`, `comment`, and the selection's `boxes` to draw it back |
+| `POST /v1/documents/{id}/highlights` | highlight a passage: the `quote` selected in the PDF and its `page`, `start` and `end` in the text, or a `line`; `points` 1 to 20, `author_ref`, `comment`, and the selection's `boxes` to draw it back |
 | `GET /v1/documents/{id}/highlights` | the passages highlighted, with their boxes on the PDF |
 | `DELETE /v1/highlights/{id}` | remove one |
 | `GET /v1/documents/{id}/score` | auto, manual and final scores, with every point explained |

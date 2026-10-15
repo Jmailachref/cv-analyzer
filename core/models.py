@@ -98,7 +98,6 @@ class Offer(Base):
     title: Mapped[str] = mapped_column(String(255))
     # As the caller ranks them: [{"name": "python", "priority": 1}, ...]; the grid is built from them.
     skills: Mapped[list] = mapped_column(Json)
-    alerts: Mapped[list] = mapped_column(Json)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -141,7 +140,7 @@ class Highlight(Base):
 
     __tablename__ = "highlights"
     __table_args__ = (
-        CheckConstraint("points BETWEEN 1 AND 5", name="ck_highlights_points"),
+        CheckConstraint("points BETWEEN 1 AND 20", name="ck_highlights_points"),
         CheckConstraint('start >= 0 AND "end" > start', name="ck_highlights_range"),
     )
 

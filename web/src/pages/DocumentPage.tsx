@@ -136,8 +136,8 @@ export default function DocumentPage({ id, recruiter }: { id: string; recruiter:
           {doc.status === "ready" && (
             <p className="mb-3 text-center text-xs text-slate-600">
               {shown === "pdf"
-                ? "Sélectionnez un passage du CV pour lui donner de +1 à +5."
-                : "Cliquez une ligne pour lui donner de +1 à +5."}
+                ? "Sélectionnez un passage du CV pour lui donner des points."
+                : "Cliquez une ligne pour lui donner des points."}
             </p>
           )}
           {shown === "pdf" ? (
@@ -203,47 +203,65 @@ export default function DocumentPage({ id, recruiter }: { id: string; recruiter:
 
 function ScoreCard({ score, waiting }: { score: Score; waiting: boolean }) {
   const details = score.analysis?.details;
+  const weight = score.settings.auto_weight;
+  const cap = score.settings.manual_cap;
+  const pct = (w: number) => `${Math.round(w * 100)} %`;
   return (
     <Card title="Note" actions={waiting && <Spinner />}>
-      <div className="flex items-center gap-4">
-        <div className="text-center">
-          <ScoreBadge value={score.final} className="px-4 py-2 text-3xl" />
-          <div className="mt-1 text-xs text-slate-500">finale / 100</div>
+      <div className="flex items-center gap-3">
+        <ScoreBadge value={score.final} className="px-4 py-2 text-3xl" />
+        <div className="text-sm text-slate-600">
+          Note finale sur 100
+          <div className="text-xs text-slate-500">
+            {score.manual === null
+              ? "= la note mots-clés, tant qu'aucun passage n'est noté"
+              : `= ${pct(weight)} mots-clés + ${pct(1 - weight)} vos points`}
+          </div>
         </div>
-        <dl className="flex-1 space-y-1.5 text-sm">
-          <div className="flex justify-between">
-            <dt className="text-slate-600">Automatique</dt>
-            <dd className="font-semibold tabular-nums">{formatScore(score.auto)}</dd>
-          </div>
-          <div className="flex justify-between">
-            <dt className="text-slate-600">Recruteur</dt>
-            <dd className="font-semibold tabular-nums">
-              {formatScore(score.manual)}
-              <span className="ml-1 text-xs font-normal text-slate-500">({score.manual_points} pts)</span>
-            </dd>
-          </div>
-          {details && (
-            <div className="flex justify-between text-xs text-slate-500">
-              <dt>Base / pénalités</dt>
-              <dd className="tabular-nums">
-                {formatScore(details.base)} / −{formatScore(details.penalties_applied)}
-              </dd>
-            </div>
-          )}
-        </dl>
       </div>
-      {score.manual === null && score.auto !== null && (
-        <p className="mt-3 text-xs text-slate-500">Sans passage noté, la note finale est la note automatique.</p>
-      )}
+
+      <div className="mt-4 space-y-3 text-sm">
+        <div className="rounded-md bg-slate-50 p-3">
+          <div className="flex justify-between font-medium">
+            <span>1. Mots-clés de l'offre</span>
+            <span className="tabular-nums">{formatScore(score.auto)} / 100</span>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">
+            Calculée seule : les compétences de l'offre trouvées dans le CV, selon leur priorité.
+            {details && (
+              <>
+                {" "}
+                Ici {formatScore(details.base)} pour les compétences trouvées
+                {details.penalties_applied ? `, moins ${formatScore(details.penalties_applied)} pour les essentielles absentes` : ""}.
+              </>
+            )}
+          </p>
+        </div>
+        <div className="rounded-md bg-slate-50 p-3">
+          <div className="flex justify-between font-medium">
+            <span>2. Vos points</span>
+            <span className="tabular-nums">
+              {score.manual_points} pts → {formatScore(score.manual ?? 0)} / 100
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">
+            Ceux que vous donnez aux passages du CV. {cap} points font 100.
+          </p>
+        </div>
+        {score.manual !== null && score.auto !== null && (
+          <p className="text-center text-xs text-slate-500 tabular-nums">
+            {pct(weight)} × {formatScore(score.auto)} + {pct(1 - weight)} × {formatScore(score.manual)} = {formatScore(score.final)}
+          </p>
+        )}
+      </div>
     </Card>
   );
 }
 
 function CriteriaCard({ criteria, onHover }: { criteria: CriterionResult[]; onHover: (c: CriterionResult | null) => void }) {
   if (!criteria.length) return null;
-  const found = criteria.filter((c) => c.kind === "skill" && c.found);
-  const missing = criteria.filter((c) => c.kind === "skill" && !c.found);
-  const alerts = criteria.filter((c) => c.kind === "alert" && c.found);
+  const found = criteria.filter((c) => c.found);
+  const missing = criteria.filter((c) => !c.found);
   const chip = (c: CriterionResult, color: string) => (
     <li
       key={c.id}
@@ -271,12 +289,6 @@ function CriteriaCard({ criteria, onHover }: { criteria: CriterionResult[]; onHo
             <ul className="flex flex-wrap gap-1.5">
               {missing.map((c) => chip(c, c.points < 0 ? "bg-red-100 text-red-800" : "bg-slate-100 text-slate-600"))}
             </ul>
-          </div>
-        )}
-        {alerts.length > 0 && (
-          <div>
-            <h3 className="mb-1 text-xs font-medium text-slate-500">Alertes</h3>
-            <ul className="flex flex-wrap gap-1.5">{alerts.map((c) => chip(c, "bg-amber-100 text-amber-900"))}</ul>
           </div>
         )}
       </div>

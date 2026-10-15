@@ -16,28 +16,20 @@ export default function OfferForm({ offer, onSaved, onCancel }: Props) {
   const [ref, setRef] = useState(offer?.external_ref ?? newRef());
   const [title, setTitle] = useState(offer?.title ?? "");
   const [skills, setSkills] = useState<Skill[]>(offer?.skills.length ? offer.skills : [{ name: "", priority: 1 }]);
-  const [alerts, setAlerts] = useState<string[]>(offer?.alerts ?? []);
-  const [alertDraft, setAlertDraft] = useState("");
   // An edited grid is sent as is; otherwise the engine builds it from the skills.
   const [criteria, setCriteria] = useState<Criterion[] | null>(() =>
-    offer && !sameGrid(offer.criteria, gridFrom(offer.skills, offer.alerts)) ? offer.criteria : null,
+    offer && !sameGrid(offer.criteria, gridFrom(offer.skills)) ? offer.criteria : null,
   );
   const [showGrid, setShowGrid] = useState(criteria !== null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
   const filledSkills = skills.filter((s) => s.name.trim());
-  const generated = gridFrom(filledSkills, alerts);
+  const generated = gridFrom(filledSkills);
   const grid = criteria ?? generated;
 
   const updateSkill = (i: number, patch: Partial<Skill>) =>
     setSkills((list) => list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
-
-  const addAlert = () => {
-    const word = alertDraft.trim();
-    if (word && !alerts.includes(word)) setAlerts([...alerts, word]);
-    setAlertDraft("");
-  };
 
   const editCriterion = (i: number, patch: Partial<Criterion>) =>
     setCriteria(grid.map((c, j) => (j === i ? { ...c, ...patch } : c)));
@@ -50,7 +42,6 @@ export default function OfferForm({ offer, onSaved, onCancel }: Props) {
       const saved = await api.saveOffer(ref.trim(), {
         title: title.trim(),
         skills: filledSkills.map((s) => ({ name: s.name.trim(), priority: s.priority })),
-        alerts,
         criteria,
         settings: offer?.settings,
       });
@@ -91,7 +82,7 @@ export default function OfferForm({ offer, onSaved, onCancel }: Props) {
       <div>
         <h3 className="text-sm font-medium text-slate-700">Compétences</h3>
         <p className="text-xs text-slate-500">
-          Essentielle : +1, et −20 si absente. Importante et CV seulement : +0,5. Secondaire et bonus : +0,1.
+          Points gagnés quand le CV la contient : essentielle +1, importante et CV seulement +0,5, secondaire et bonus +0,1. Seule une compétence essentielle absente fait perdre des points (−20).
         </p>
         <div className="mt-2 space-y-2">
           {skills.map((skill, i) => (
@@ -121,34 +112,6 @@ export default function OfferForm({ offer, onSaved, onCancel }: Props) {
           <Button type="button" onClick={() => setSkills([...skills, { name: "", priority: 2 }])}>
             + Compétence
           </Button>
-        </div>
-      </div>
-
-      <div>
-        <h3 className="text-sm font-medium text-slate-700">Mots d'alerte</h3>
-        <p className="text-xs text-slate-500">−5 quand ils apparaissent, par exemple « stage » pour un poste senior.</p>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          {alerts.map((word) => (
-            <span key={word} className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-sm text-amber-900">
-              {word}
-              <button type="button" onClick={() => setAlerts(alerts.filter((w) => w !== word))} className="text-amber-700 hover:text-amber-950">
-                ✕
-              </button>
-            </span>
-          ))}
-          <input
-            value={alertDraft}
-            onChange={(e) => setAlertDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addAlert();
-              }
-            }}
-            onBlur={addAlert}
-            placeholder="Ajouter puis Entrée"
-            className="w-44 rounded-md border border-slate-300 px-2 py-1 text-sm"
-          />
         </div>
       </div>
 
@@ -190,8 +153,7 @@ export default function OfferForm({ offer, onSaved, onCancel }: Props) {
                 {grid.map((c, i) => (
                   <tr key={c.id} className="border-t border-slate-100">
                     <td className="py-1.5 pr-2">
-                      <span className={c.kind === "alert" ? "text-amber-800" : ""}>{c.label}</span>
-                      {c.kind === "alert" && <span className="ml-1 text-xs text-amber-700">alerte</span>}
+                      {c.label}
                     </td>
                     <td className="py-1.5 pr-2">
                       <input
@@ -207,6 +169,7 @@ export default function OfferForm({ offer, onSaved, onCancel }: Props) {
                       <input
                         type="number"
                         step="0.1"
+                        min={0}
                         value={c.points_present}
                         onChange={(e) => editCriterion(i, { points_present: Number(e.target.value) })}
                         className="w-full rounded border border-slate-200 px-2 py-1 tabular-nums"
@@ -217,7 +180,6 @@ export default function OfferForm({ offer, onSaved, onCancel }: Props) {
                         type="number"
                         step="1"
                         max={0}
-                        disabled={c.kind === "alert"}
                         value={c.points_absent}
                         onChange={(e) => editCriterion(i, { points_absent: Number(e.target.value) })}
                         className="w-full rounded border border-slate-200 px-2 py-1 tabular-nums disabled:bg-slate-50"

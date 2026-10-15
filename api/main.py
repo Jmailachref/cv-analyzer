@@ -102,7 +102,6 @@ def offer_out(o: Offer, g: Grid) -> schemas.OfferOut:
         external_ref=o.external_ref,
         title=o.title,
         skills=o.skills,
-        alerts=o.alerts,
         grid_version=g.version,
         criteria=g.criteria,
         settings=g.settings,
@@ -324,8 +323,8 @@ def save_offer(ref: str, body: schemas.OfferIn, db: Db, client: Client) -> schem
     if offer is None:
         offer = Offer(client_id=client, external_ref=ref)
         db.add(offer)
-    offer.title, offer.skills, offer.alerts = data["title"], data["skills"], data["alerts"]
-    criteria = data["criteria"] if body.criteria is not None else grid_from(data["skills"], data["alerts"])
+    offer.title, offer.skills = data["title"], data["skills"]
+    criteria = data["criteria"] if body.criteria is not None else grid_from(data["skills"])
     db.flush()
     grid = latest_grid(db, offer.id)
     changed = grid is None or (grid.criteria, grid.settings) != (criteria, data["settings"])
@@ -515,6 +514,7 @@ def document_score(document_id: uuid.UUID, db: Db, client: Client) -> schemas.Sc
         manual=manual,
         final=final_score(auto, manual, grid.settings),
         manual_points=sum(h.points for h in marks),
+        settings=grid.settings,
         analysis=analysis_out(a, grid) if a else None,
         highlights=[highlight_out(h) for h in marks],
     )

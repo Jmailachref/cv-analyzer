@@ -10,11 +10,7 @@ def lines(*texts):
 
 
 def skill(id, present, absent=0.0, **extra):
-    return {"id": id, "label": extra.pop("label", id), "kind": "skill", "points_present": present, "points_absent": absent, **extra}
-
-
-def alert(id, points=-5.0):
-    return {"id": id, "label": id, "kind": "alert", "default_synonyms": False, "points_present": points, "points_absent": 0}
+    return {"id": id, "label": extra.pop("label", id), "points_present": present, "points_absent": absent, **extra}
 
 
 def test_normalize_drops_accents_and_keeps_offsets():
@@ -38,23 +34,22 @@ def test_default_synonyms_are_added_unless_turned_off():
 
 
 def test_the_data_scientist_example():
-    criteria = [skill("python", 1), skill("sql", 0.5), skill("docker", 0.1), skill("data", 0, -20, default_synonyms=False), alert("stage")]
+    criteria = [skill("python", 1), skill("sql", 0.5), skill("docker", 0.1), skill("data", 0, -20, default_synonyms=False)]
     cv = lines("Développeur Python, 3 ans", "Bases PostgreSQL et Redis")
     result = KeywordAnalyzer().analyze(cv, criteria, SETTINGS)
     # 1.5 of 1.6 possible points = 93.75, minus 20 for the missing "data".
     assert result.score == 73.8
     by_id = {c["id"]: c for c in result.details["criteria"]}
     assert by_id["python"] == {
-        "id": "python", "label": "python", "kind": "skill", "found": True, "points": 1.0,
+        "id": "python", "label": "python", "found": True, "points": 1.0,
         "lines": [0], "matched_terms": ["python"],
     }
     assert by_id["sql"]["matched_terms"] == ["postgresql"] and by_id["sql"]["lines"] == [1]
     assert by_id["data"]["found"] is False and by_id["data"]["points"] == -20
-    assert by_id["stage"]["found"] is False and by_id["stage"]["points"] == 0
 
 
-def test_warning_words_cost_points_and_penalties_are_capped():
-    criteria = [skill("python", 1, -40), skill("java", 1, -40), alert("stage")]
+def test_penalties_are_capped():
+    criteria = [skill("python", 1, -40), skill("java", 1, -40), skill("go", 1, -5)]
     result = KeywordAnalyzer().analyze(lines("Stage de fin d'études"), criteria, SETTINGS)
     assert result.details["penalties"] == 85
     assert result.details["penalties_applied"] == 50
@@ -67,8 +62,8 @@ def test_a_word_counts_once_however_often_it_appears():
     assert once.score == many.score == 50
 
 
-def test_a_grid_of_warnings_only_starts_from_100():
-    assert KeywordAnalyzer().analyze(lines("Senior engineer"), [alert("stage")], SETTINGS).score == 100
+def test_a_grid_without_points_to_gain_starts_from_100():
+    assert KeywordAnalyzer().analyze(lines("Senior engineer"), [skill("java", 0, -20)], SETTINGS).score == 80
 
 
 def test_final_score_weighs_auto_and_highlights():

@@ -19,21 +19,10 @@ Term = Annotated[str, Field(min_length=1, max_length=80)]
 class Criterion(BaseModel):
     id: Slug
     label: Term = Field(description="What the recruiter reads, e.g. Python. Also searched for.")
-    kind: Literal["skill", "alert"] = Field(
-        default="skill", description="skill: wanted in the CV. alert: a warning word that costs points when present."
-    )
     terms: list[Term] = Field(default=[], max_length=40, description="Extra words that count as this criterion")
     default_synonyms: bool = Field(default=True, description="Also search the engine's synonyms for the label")
-    points_present: float = Field(default=1.0, ge=-50, le=50)
-    points_absent: float = Field(default=0.0, ge=-50, le=0)
-
-    @model_validator(mode="after")
-    def coherent(self) -> Criterion:
-        if self.kind == "alert" and (self.points_present > 0 or self.points_absent != 0):
-            raise ValueError(f"{self.id}: an alert costs points when present and nothing when absent")
-        if self.kind == "skill" and self.points_present < 0:
-            raise ValueError(f"{self.id}: a skill cannot cost points when present; use an alert")
-        return self
+    points_present: float = Field(default=1.0, ge=0, le=50, description="Points when found")
+    points_absent: float = Field(default=0.0, ge=-50, le=0, description="Points lost when missing (core skills)")
 
 
 class GridSettings(BaseModel):
@@ -54,11 +43,10 @@ def check_distinct(criteria: list[Criterion]) -> None:
 
 
 class OfferIn(BaseModel):
-    """An offer as RecruteHub defines it. Without criteria, the grid is built from skills and alerts."""
+    """An offer as RecruteHub defines it. Without criteria, the grid is built from the skills."""
 
     title: Annotated[str, Field(min_length=1, max_length=255)]
     skills: list[SkillIn] = Field(default=[], max_length=60)
-    alerts: list[Term] = Field(default=[], max_length=40, description="Warning words, e.g. stage for a senior role")
     criteria: list[Criterion] | None = Field(
         default=None, max_length=100, description="The grid, edited by a recruiter; built from skills when left out"
     )
@@ -85,7 +73,6 @@ class OfferOut(BaseModel):
     external_ref: str
     title: str
     skills: list[SkillIn]
-    alerts: list[str]
     grid_version: int
     criteria: list[Criterion]
     settings: GridSettings
@@ -168,7 +155,7 @@ class HighlightIn(BaseModel):
     boxes: list[Box] | None = Field(
         default=None, max_length=100, description="Where the selection is drawn on the PDF; from the lines if left out"
     )
-    points: int = Field(ge=1, le=5)
+    points: int = Field(ge=1, le=20, description="What the passage is worth, 1 to 20")
     comment: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
@@ -204,6 +191,7 @@ class ScoreOut(BaseModel):
     manual: float | None = Field(description="Highlight points out of 100; null until someone highlights")
     final: float | None
     manual_points: int
+    settings: GridSettings = Field(description="How the scores combine: auto_weight, manual_cap, penalty_cap")
     analysis: AnalysisOut | None
     highlights: list[HighlightOut]
 

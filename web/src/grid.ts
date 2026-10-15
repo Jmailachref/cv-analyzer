@@ -8,7 +8,6 @@ export const PRIORITY_POINTS: Record<number, [number, number]> = {
   4: [0.5, 0],
   5: [0.1, 0],
 };
-export const ALERT_POINTS = -5;
 
 const DASHES: Record<string, string> = { "’": "'", "‘": "'", "–": "-", "—": "-", " ": " " };
 
@@ -21,7 +20,7 @@ export function normalize(text: string): string {
     .join("");
 }
 
-export function gridFrom(skills: Skill[], alerts: string[]): Criterion[] {
+export function gridFrom(skills: Skill[]): Criterion[] {
   const used = new Set<string>();
   const slug = (name: string) => {
     let base = normalize(name).split(/\s+/).filter(Boolean).join("-").slice(0, 50) || "criterion";
@@ -31,33 +30,20 @@ export function gridFrom(skills: Skill[], alerts: string[]): Criterion[] {
     used.add(out);
     return out;
   };
-  const criteria: Criterion[] = [...skills]
+  return [...skills]
     .sort((a, b) => a.priority - b.priority)
     .map((s) => ({
       id: slug(s.name),
       label: s.name,
-      kind: "skill",
       terms: [],
       default_synonyms: true,
       points_present: PRIORITY_POINTS[s.priority][0],
       points_absent: PRIORITY_POINTS[s.priority][1],
     }));
-  for (const word of alerts) {
-    criteria.push({
-      id: slug(word),
-      label: word,
-      kind: "alert",
-      terms: [],
-      default_synonyms: false,
-      points_present: ALERT_POINTS,
-      points_absent: 0,
-    });
-  }
-  return criteria;
 }
 
 export function sameGrid(a: Criterion[], b: Criterion[]): boolean {
   const key = (c: Criterion) =>
-    JSON.stringify([c.id, c.label, c.kind, c.terms, c.default_synonyms, c.points_present, c.points_absent]);
+    JSON.stringify([c.id, c.label, c.terms, c.default_synonyms, c.points_present, c.points_absent]);
   return a.length === b.length && a.every((c, i) => key(c) === key(b[i]));
 }

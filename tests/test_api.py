@@ -27,7 +27,6 @@ CV_WEAK = make_pdf(
 OFFER = {
     "title": "Data scientist",
     "skills": [{"language": "Python", "priority": 1}, {"language": "SQL", "priority": 2}, {"language": "Docker", "priority": 3}],
-    "alerts": ["stage"],
 }
 
 
@@ -53,18 +52,18 @@ def test_an_offer_gets_a_grid_built_from_its_skills(client):
     grid = create_offer(client)
     assert (grid["external_ref"], grid["title"], grid["grid_version"]) == ("offer-1", "Data scientist", 1)
     assert grid["skills"][0] == {"name": "Python", "priority": 1}
-    assert [(c["id"], c["kind"], c["points_present"], c["points_absent"]) for c in grid["criteria"]] == [
-        ("python", "skill", 1.0, -20.0),
-        ("sql", "skill", 0.5, 0.0),
-        ("docker", "skill", 0.1, 0.0),
-        ("stage", "alert", -5.0, 0.0),
+    # Only a missing core skill costs points.
+    assert [(c["id"], c["points_present"], c["points_absent"]) for c in grid["criteria"]] == [
+        ("python", 1.0, -20.0),
+        ("sql", 0.5, 0.0),
+        ("docker", 0.1, 0.0),
     ]
     assert grid["settings"] == {"penalty_cap": 50, "auto_weight": 0.6, "manual_cap": 20}
 
 
 def test_offer_validation(client):
-    bad_alert = {"title": "x", "criteria": [{"id": "stage", "label": "stage", "kind": "alert", "points_present": 2}]}
-    assert client.put("/v1/offers/offer-1", json=bad_alert, headers=RH).status_code == 400
+    costs_when_found = {"title": "x", "criteria": [{"id": "stage", "label": "stage", "points_present": -5}]}
+    assert client.put("/v1/offers/offer-1", json=costs_when_found, headers=RH).status_code == 400
     twice = {"title": "x", "criteria": [{"id": "python", "label": "Python"}, {"id": "python", "label": "Py"}]}
     assert client.put("/v1/offers/offer-1", json=twice, headers=RH).status_code == 400
     same_skill = {"title": "x", "skills": [{"name": "Python", "priority": 1}, {"name": "python", "priority": 2}]}
@@ -145,7 +144,8 @@ def test_highlight_validation(client):
     url = f"/v1/documents/{doc['id']}/highlights"
     assert client.post(url, json={"author_ref": "u", "line": 99, "points": 3}, headers=RH).json()["error"]["code"] == "invalid_range"
     assert client.post(url, json={"author_ref": "u", "start": 0, "end": 99999, "points": 3}, headers=RH).status_code == 400
-    assert client.post(url, json={"author_ref": "u", "line": 0, "points": 6}, headers=RH).status_code == 400
+    assert client.post(url, json={"author_ref": "u", "line": 0, "points": 21}, headers=RH).status_code == 400
+    assert client.post(url, json={"author_ref": "u", "line": 0, "points": 15}, headers=RH).json()["points"] == 15
     assert client.post(url, json={"author_ref": "u", "start": 0, "end": 4, "line": 0, "points": 1}, headers=RH).status_code == 400
 
 
@@ -159,7 +159,7 @@ def test_ranking_and_rescoring_when_the_grid_changes(client):
 
     ranking = client.get("/v1/offers/offer-1/ranking", headers=RH).json()
     assert [(r["rank"], r["external_ref"], r["final"]) for r in ranking] == [(1, "good", 100.0), (2, "weak", 0.0)]
-    # Weak: no Python (-20), a "stage" (-5), nothing gained.
+    # Weak: no Python (-20), nothing gained.
     assert ranking[1]["missing"] == ["Python"]
 
     # A new title alone leaves the grid, and the scores, as they are.
@@ -173,8 +173,8 @@ def test_ranking_and_rescoring_when_the_grid_changes(client):
     assert drain() == 2
     weak_score = client.get(f"/v1/documents/{weak['id']}/score", headers=RH).json()
     assert weak_score["grid_version"] == 2
-    # 1 of 2.6 points = 38.5, minus 20 and 5.
-    assert weak_score["auto"] == 13.5
+    # 1 of 2.6 points = 38.5, minus 20 for the missing Python.
+    assert weak_score["auto"] == 18.5
     history = client.get(f"/v1/documents/{good['id']}/analyses", headers=RH).json()
     assert [a["grid_version"] for a in history] == [2, 1]
 

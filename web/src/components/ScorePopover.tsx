@@ -11,10 +11,14 @@ type Props = {
 
 const WIDTH = 320;
 
-// The box a recruiter scores a selected passage in: +1 to +5 and a comment.
+export const MAX_POINTS = 20;
+
+// The box a recruiter scores a selected passage in: a number of points and a comment.
 export default function ScorePopover({ quote, anchor, onSubmit, onClose }: Props) {
   const box = useRef<HTMLDivElement>(null);
-  const [points, setPoints] = useState(3);
+  const [points, setPoints] = useState("");
+  const value = Number(points);
+  const valid = Number.isInteger(value) && value >= 1 && value <= MAX_POINTS;
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -22,7 +26,6 @@ export default function ScorePopover({ quote, anchor, onSubmit, onClose }: Props
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
-      if (/^[1-5]$/.test(e.key) && document.activeElement?.tagName !== "TEXTAREA") setPoints(Number(e.key));
     };
     const onDown = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) onClose();
@@ -36,10 +39,11 @@ export default function ScorePopover({ quote, anchor, onSubmit, onClose }: Props
   }, [onClose]);
 
   const submit = async () => {
+    if (!valid) return;
     setBusy(true);
     setError(null);
     try {
-      await onSubmit(points, comment.trim());
+      await onSubmit(value, comment.trim());
     } catch (e) {
       setError(e);
       setBusy(false);
@@ -56,20 +60,25 @@ export default function ScorePopover({ quote, anchor, onSubmit, onClose }: Props
       style={{ left, top, width: WIDTH }}
     >
       <p className="line-clamp-3 border-l-2 border-blue-500 pl-2 text-xs text-slate-600 italic">{quote}</p>
-      <div className="mt-3 flex gap-1.5">
-        {[1, 2, 3, 4, 5].map((n) => (
-          <button
-            key={n}
-            type="button"
-            onClick={() => setPoints(n)}
-            className={`flex-1 rounded-md py-1.5 text-sm font-semibold transition ${
-              points === n ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-            }`}
-          >
-            +{n}
-          </button>
-        ))}
-      </div>
+      <label className="mt-3 flex items-center gap-2 text-sm text-slate-700">
+        Points
+        <input
+          autoFocus
+          type="number"
+          inputMode="numeric"
+          min={1}
+          max={MAX_POINTS}
+          step={1}
+          value={points}
+          onChange={(e) => setPoints(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+          placeholder="ex. 3"
+          className="w-24 rounded-md border border-slate-300 px-2 py-1.5 text-base font-semibold tabular-nums"
+        />
+        <span className="text-xs text-slate-500">de 1 à {MAX_POINTS}</span>
+      </label>
       <textarea
         value={comment}
         onChange={(e) => setComment(e.target.value)}
@@ -87,8 +96,8 @@ export default function ScorePopover({ quote, anchor, onSubmit, onClose }: Props
         <Button variant="ghost" onClick={onClose}>
           Annuler
         </Button>
-        <Button variant="primary" onClick={submit} disabled={busy}>
-          {busy ? "…" : `Donner +${points}`}
+        <Button variant="primary" onClick={submit} disabled={busy || !valid}>
+          {busy ? "…" : valid ? `Donner +${value}` : "Donner"}
         </Button>
       </div>
     </div>
