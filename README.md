@@ -62,7 +62,7 @@ curl -H "Authorization: Bearer dev-key" -F file=@cv.pdf -F offer_ref=offer-1 -F 
    `ready`, `unreadable` (nothing to read, even with OCR) or `failed`.
 4. **Score.** The worker scores the CV against its offer's grid at once.
    When the grid changes, every CV read for the offer is scored again.
-5. **Highlight.** A recruiter marks passages worth 1 to 20 points each.
+5. **Highlight.** A recruiter marks passages worth −100 to +100 points each.
 6. **Read the result.** `GET /v1/documents/{id}/score` or
    `GET /v1/offers/{ref}/ranking`.
 
@@ -97,18 +97,18 @@ back as `criteria` in the same PUT; the grid is then taken as given. Each
 change to the grid adds a version; changing only the title does not. Old
 scores keep the version they used.
 
-### The scores
+### The points
 
-All three are out of 100.
+A CV's score is a sum of points, with no bound and no weights:
 
-- **auto** = max(0, gained / possible × 100 − min(`penalty_cap`, penalties)).
-  `possible` is the sum of the positive points of the grid, `gained` the
-  part found, `penalties` what missing skills cost. `penalty_cap` is 50 by
-  default. A grid with nothing to gain starts from 100.
-- **manual** = min(highlight points, `manual_cap`) / `manual_cap` × 100, so
-  20 points (the default cap) make 100. Null until someone highlights.
-- **final** = `auto_weight` × auto + (1 − `auto_weight`) × manual, 0.6 by
-  default; the automatic score alone until someone highlights.
+- **auto** = the points of the grid's criteria found, minus what missing
+  ones cost. Each criterion counts once, however often its words appear.
+- **manual** = the sum of the recruiters' highlights, each from −100 to
+  +100 (not 0). Negative points mark a red flag, for example a former
+  employer the company can no longer hire from. A passage counts once: a
+  highlight overlapping one already scored, or with the same text as one
+  scored elsewhere in the CV, is refused (`409 already_scored`).
+- **total** = auto + manual. The ranking follows it.
 
 Every analysis keeps which criteria were found, on which lines, through
 which words, and what each one gained or cost. The scores rank candidates;
@@ -122,12 +122,12 @@ A React app (`web/`) the API serves under `/app`, for recruiters:
 - **Offers**: create an offer with its skills ranked 1 to 5, and adjust the
   grid it builds (more words per criterion, other points).
 - **Candidates**: drop CVs (several at once), then follow the ranking as they
-  are read and scored: automatic, recruiter and final scores, and the core
+  are read and scored: keyword, recruiter and total points, and the core
   skills each CV is missing.
 - **A CV**: the PDF itself. Select a passage, type the points it is worth
-  (1 to 20) and a comment; it stays highlighted on the PDF and counts in the
-  recruiter score at once. The score panel explains how the final score is
-  made.
+  (−100 to +100, negative for a red flag, shown in red) and a comment; it
+  stays highlighted on the PDF and counts in the total at once. The points
+  panel shows how the total is made.
   Hovering a skill the engine found outlines the lines it was found on. A
   scanned CV is scored from the text OCR read, line by line.
 
@@ -150,10 +150,10 @@ like `{"error": {"code": "not_found", "message": "..."}}`.
 | Route | What it does |
 |---|---|
 | `GET /v1/offers` | the offers, last updated first, with their number of CVs |
-| `PUT /v1/offers/{ref}` | create or update an offer: `title`, `skills`, optional `criteria` and `settings`; rescores its CVs when the grid changes |
+| `PUT /v1/offers/{ref}` | create or update an offer: `title`, `skills`, optional `criteria`; rescores its CVs when the grid changes |
 | `GET /v1/offers/{ref}` | the offer and its latest grid |
 | `DELETE /v1/offers/{ref}` | erase the offer and every CV sent for it |
-| `GET /v1/offers/{ref}/ranking` | the offer's CVs, best final score first, with missing core skills |
+| `GET /v1/offers/{ref}/ranking` | the offer's CVs, highest total first, with missing core skills |
 | `POST /v1/documents` | upload a PDF (form fields `file`, `offer_ref` required, `external_ref`); 202, or 404 `offer_not_found` |
 | `GET /v1/documents` | list, filtered by `offer_ref`, `external_ref`, `status` |
 | `GET /v1/documents/{id}` | status, full text and lines with sections, offsets and boxes |
@@ -161,10 +161,10 @@ like `{"error": {"code": "not_found", "message": "..."}}`.
 | `DELETE /v1/documents/{id}` | erase the PDF, text, scores and highlights |
 | `POST /v1/documents/{id}/analyses` | score now against the offer's latest grid (`analyzer`) |
 | `GET /v1/documents/{id}/analyses` | every score the CV got, across grid versions and analyzers |
-| `POST /v1/documents/{id}/highlights` | highlight a passage: the `quote` selected in the PDF and its `page`, `start` and `end` in the text, or a `line`; `points` 1 to 20, `author_ref`, `comment`, and the selection's `boxes` to draw it back |
+| `POST /v1/documents/{id}/highlights` | highlight a passage: the `quote` selected in the PDF and its `page`, `start` and `end` in the text, or a `line`; `points` −100 to +100 (not 0, each passage once), `author_ref`, `comment`, and the selection's `boxes` to draw it back |
 | `GET /v1/documents/{id}/highlights` | the passages highlighted, with their boxes on the PDF |
 | `DELETE /v1/highlights/{id}` | remove one |
-| `GET /v1/documents/{id}/score` | auto, manual and final scores, with every point explained |
+| `GET /v1/documents/{id}/score` | auto, manual and total points, with every point explained |
 | `GET /v1/analyzers` | the analyzers and their versions |
 
 ### Webhooks
@@ -243,8 +243,8 @@ cd web && npm ci && npm run build   # typecheck and build the web app
 
 ## Adding an analyzer
 
-An analyzer takes the CV's lines, its offer's grid criteria and settings, and returns
-a score out of 100 with its details (`analysis/analyzers.py`). Register it in
+An analyzer takes the CV's lines, its offer's grid criteria, and returns
+its points with their details (`analysis/analyzers.py`). Register it in
 `ANALYZERS` and it is available through `POST /v1/documents/{id}/analyses`
 with `"analyzer": "<name>"`, beside the keyword one, so the two can be
 compared on the same CVs before switching. Planned: `embeddings` (a local
@@ -256,7 +256,7 @@ later, `llm`.
 ```
 api/          FastAPI app: routes, schemas, API keys; serves web/dist under /app
 core/         settings, database, models, queue, PDF storage, webhooks
-analysis/     PDF extraction and OCR, text matching, synonyms, analyzers, final score
+analysis/     PDF extraction and OCR, text matching, synonyms, analyzers, total points
 worker/       the queue worker
 web/          the web app: React, TypeScript, Tailwind, pdf.js
 migrations/   Alembic

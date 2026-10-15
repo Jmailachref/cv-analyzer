@@ -29,8 +29,9 @@ type Props = {
 
 type PageSize = { width: number; height: number };
 
-// Darker for passages worth more: 1-4, 5-8, 9-12, 13-16, 17-20 points.
-const MARK_COLORS = ["", "bg-yellow-300/40", "bg-yellow-300/50", "bg-amber-400/45", "bg-orange-400/45", "bg-emerald-400/45"];
+// Yellow for points given, red for points taken away (a red flag), darker past 20 points.
+const markColor = (points: number) =>
+  points < 0 ? (points <= -20 ? "bg-red-500/45" : "bg-red-400/35") : points >= 20 ? "bg-amber-400/50" : "bg-yellow-300/45";
 
 // Boxes are in PDF points from the page's top left corner, as the engine stores line boxes.
 export default function PdfViewer({ url, marks, focus = [], onSelect, onMarkClick }: Props) {
@@ -187,7 +188,7 @@ function PdfPage({ doc, number, size, scale, marks, focus, onMarkClick }: {
             .map((b, j) => (
               <div
                 key={`${m.id}-${j}`}
-                className={`absolute rounded-sm mix-blend-multiply ${MARK_COLORS[Math.min(5, Math.ceil(m.points / 4))]} ${m.active ? "ring-2 ring-blue-600" : ""}`}
+                className={`absolute rounded-sm mix-blend-multiply ${markColor(m.points)} ${m.active ? "ring-2 ring-blue-600" : ""}`}
                 style={style(b)}
               />
             )),

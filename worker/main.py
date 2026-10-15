@@ -133,6 +133,23 @@ def recover_lost_jobs() -> int:
         return len(stale)
 
 
+def rescore_outdated(limit: int = 200) -> int:
+    """Score again the read CVs the current analyzer version has not scored yet, e.g. after an upgrade."""
+    engine = ANALYZERS[DEFAULT_ANALYZER]
+    current = select(Analysis.id).where(
+        Analysis.document_id == Document.id,
+        Analysis.analyzer == engine.name,
+        Analysis.analyzer_version == engine.version,
+    )
+    with SessionLocal() as session:
+        outdated = session.scalars(
+            select(Document).where(Document.status == "ready", ~current.exists()).limit(limit)
+        ).all()
+        for document in outdated:
+            analyze(session, document, latest_grid(session, document.offer_id))
+        return len(outdated)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     stopping = False
@@ -150,6 +167,8 @@ def main() -> None:
         if (now - last_sweep).total_seconds() >= SWEEP_EVERY_S:
             if count := recover_lost_jobs():
                 log.warning("requeued %s lost documents", count)
+            if count := rescore_outdated():
+                log.info("scored %s CVs again with %s %s", count, DEFAULT_ANALYZER, ANALYZERS[DEFAULT_ANALYZER].version)
             last_sweep = now
         try:
             job = dequeue(timeout=5)

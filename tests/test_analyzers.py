@@ -1,8 +1,8 @@
 from analysis.analyzers import CvLine, KeywordAnalyzer, terms_of
-from analysis.scoring import final_score, manual_score
+from analysis.scoring import total_points
 from analysis.text import locate, normalize, term_pattern
 
-SETTINGS = {"penalty_cap": 50, "auto_weight": 0.6, "manual_cap": 20}
+SETTINGS: dict = {}
 
 
 def lines(*texts):
@@ -37,8 +37,9 @@ def test_the_data_scientist_example():
     criteria = [skill("python", 1), skill("sql", 0.5), skill("docker", 0.1), skill("data", 0, -20, default_synonyms=False)]
     cv = lines("Développeur Python, 3 ans", "Bases PostgreSQL et Redis")
     result = KeywordAnalyzer().analyze(cv, criteria, SETTINGS)
-    # 1.5 of 1.6 possible points = 93.75, minus 20 for the missing "data".
-    assert result.score == 73.8
+    # Python +1, SQL (through PostgreSQL) +0.5, no Docker, -20 for the missing "data".
+    assert result.score == -18.5
+    assert (result.details["possible"], result.details["gained"], result.details["penalties"]) == (1.6, 1.5, 20)
     by_id = {c["id"]: c for c in result.details["criteria"]}
     assert by_id["python"] == {
         "id": "python", "label": "python", "found": True, "points": 1.0,
@@ -48,31 +49,28 @@ def test_the_data_scientist_example():
     assert by_id["data"]["found"] is False and by_id["data"]["points"] == -20
 
 
-def test_penalties_are_capped():
+def test_points_have_no_bound():
     criteria = [skill("python", 1, -40), skill("java", 1, -40), skill("go", 1, -5)]
     result = KeywordAnalyzer().analyze(lines("Stage de fin d'études"), criteria, SETTINGS)
     assert result.details["penalties"] == 85
-    assert result.details["penalties_applied"] == 50
-    assert result.score == 0
+    assert result.score == -85
 
 
 def test_a_word_counts_once_however_often_it_appears():
     once = KeywordAnalyzer().analyze(lines("Python"), [skill("python", 1), skill("go", 1)], SETTINGS)
     many = KeywordAnalyzer().analyze(lines("Python Python", "python"), [skill("python", 1), skill("go", 1)], SETTINGS)
-    assert once.score == many.score == 50
+    assert once.score == many.score == 1
 
 
-def test_a_grid_without_points_to_gain_starts_from_100():
-    assert KeywordAnalyzer().analyze(lines("Senior engineer"), [skill("java", 0, -20)], SETTINGS).score == 80
+def test_only_missing_criteria_cost_points():
+    assert KeywordAnalyzer().analyze(lines("Senior engineer"), [skill("java", 0, -20)], SETTINGS).score == -20
 
 
-def test_final_score_weighs_auto_and_highlights():
-    assert manual_score([], SETTINGS) is None
-    assert manual_score([5, 5], SETTINGS) == 50
-    assert manual_score([5, 5, 5, 5, 5], SETTINGS) == 100  # capped at 20 points
-    assert final_score(70, None, SETTINGS) == 70
-    assert final_score(70, 50, SETTINGS) == 62
-    assert final_score(None, 50, SETTINGS) is None
+def test_total_is_keyword_points_plus_every_recruiter_point():
+    assert total_points(1.6, []) == 1.6
+    assert total_points(1.6, [30, 50, 40]) == 121.6
+    assert total_points(1.6, [10, -100]) == -88.4
+    assert total_points(None, [10]) is None
 
 
 def test_locate_finds_a_quote_whatever_its_spacing():

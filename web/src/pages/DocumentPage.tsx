@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Box, type CriterionResult, type DocumentDetail, type Highlight, type Line, type Score } from "../api";
 import PdfViewer, { type Selection } from "../components/PdfViewer";
 import ScorePopover from "../components/ScorePopover";
-import { Button, Card, Empty, ErrorBanner, formatScore, ScoreBadge, Spinner, StatusBadge } from "../components/ui";
+import { Button, Card, Empty, ErrorBanner, formatPoints, ScoreBadge, Spinner, StatusBadge } from "../components/ui";
 import { go, href } from "../router";
 
 type Pending = { quote: string; anchor: { x: number; y: number }; target: { quote: string; page: number; boxes: Box[] } | { line: number } };
@@ -177,7 +177,7 @@ export default function DocumentPage({ id, recruiter }: { id: string; recruiter:
                   >
                     <div className="flex items-start justify-between gap-2">
                       <p className="line-clamp-3 text-slate-700 italic">« {h.quote} »</p>
-                      <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">+{h.points}</span>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-bold tabular-nums ${h.points < 0 ? "bg-red-100 text-red-800" : "bg-emerald-100 text-emerald-800"}`}>{formatPoints(h.points)}</span>
                     </div>
                     {h.comment && <p className="mt-1.5 text-slate-900">{h.comment}</p>}
                     <div className="mt-1.5 flex items-center justify-between text-xs text-slate-500">
@@ -203,54 +203,49 @@ export default function DocumentPage({ id, recruiter }: { id: string; recruiter:
 
 function ScoreCard({ score, waiting }: { score: Score; waiting: boolean }) {
   const details = score.analysis?.details;
-  const weight = score.settings.auto_weight;
-  const cap = score.settings.manual_cap;
-  const pct = (w: number) => `${Math.round(w * 100)} %`;
+  const flags = score.highlights.filter((h) => h.points < 0).length;
   return (
-    <Card title="Note" actions={waiting && <Spinner />}>
+    <Card title="Points" actions={waiting && <Spinner />}>
       <div className="flex items-center gap-3">
-        <ScoreBadge value={score.final} className="px-4 py-2 text-3xl" />
+        <ScoreBadge value={score.total} className="px-4 py-2 text-3xl" />
         <div className="text-sm text-slate-600">
-          Note finale sur 100
-          <div className="text-xs text-slate-500">
-            {score.manual === null
-              ? "= la note mots-clés, tant qu'aucun passage n'est noté"
-              : `= ${pct(weight)} mots-clés + ${pct(1 - weight)} vos points`}
-          </div>
+          Total du CV
+          <div className="text-xs text-slate-500">La somme de tous les points, sans limite. Le classement suit ce total.</div>
         </div>
       </div>
 
       <div className="mt-4 space-y-3 text-sm">
         <div className="rounded-md bg-slate-50 p-3">
           <div className="flex justify-between font-medium">
-            <span>1. Mots-clés de l'offre</span>
-            <span className="tabular-nums">{formatScore(score.auto)} / 100</span>
+            <span>Mots-clés de l'offre</span>
+            <span className="tabular-nums">{formatPoints(score.auto)}</span>
           </div>
           <p className="mt-1 text-xs text-slate-500">
-            Calculée seule : les compétences de l'offre trouvées dans le CV, selon leur priorité.
+            Chaque compétence trouvée compte une fois, même si elle revient plusieurs fois dans le CV.
             {details && (
               <>
                 {" "}
-                Ici {formatScore(details.base)} pour les compétences trouvées
-                {details.penalties_applied ? `, moins ${formatScore(details.penalties_applied)} pour les essentielles absentes` : ""}.
+                Ici {formatPoints(details.gained ?? 0)} pour les compétences trouvées
+                {details.penalties ? `, ${formatPoints(-details.penalties)} pour les essentielles absentes` : ""}.
               </>
             )}
           </p>
         </div>
         <div className="rounded-md bg-slate-50 p-3">
           <div className="flex justify-between font-medium">
-            <span>2. Vos points</span>
-            <span className="tabular-nums">
-              {score.manual_points} pts → {formatScore(score.manual ?? 0)} / 100
-            </span>
+            <span>Vos points</span>
+            <span className="tabular-nums">{formatPoints(score.manual)}</span>
           </div>
           <p className="mt-1 text-xs text-slate-500">
-            Ceux que vous donnez aux passages du CV. {cap} points font 100.
+            {score.highlights.length
+              ? `${score.highlights.length} passage${score.highlights.length > 1 ? "s" : ""} noté${score.highlights.length > 1 ? "s" : ""}${flags ? `, dont ${flags} red flag${flags > 1 ? "s" : ""}` : ""}.`
+              : "Aucun passage noté."}{" "}
+            De −100 à +100 par passage, chaque passage une seule fois.
           </p>
         </div>
-        {score.manual !== null && score.auto !== null && (
+        {score.auto !== null && (
           <p className="text-center text-xs text-slate-500 tabular-nums">
-            {pct(weight)} × {formatScore(score.auto)} + {pct(1 - weight)} × {formatScore(score.manual)} = {formatScore(score.final)}
+            {formatPoints(score.auto)} {score.manual < 0 ? "−" : "+"} {Math.abs(score.manual)} = {formatPoints(score.total)}
           </p>
         )}
       </div>
@@ -332,11 +327,11 @@ function TextView({ doc, highlights, focusLines, onPick }: {
                   onPick(line, { x: r.left + r.width / 2, y: r.bottom });
                 }}
                 className={`flex w-full items-start justify-between gap-3 rounded px-2 py-0.5 text-left text-sm hover:bg-blue-50 ${
-                  points ? "bg-yellow-100" : ""
+                  points < 0 ? "bg-red-100" : points ? "bg-yellow-100" : ""
                 } ${focusLines.includes(line.n) ? "ring-2 ring-blue-500" : ""}`}
               >
                 <span>{line.text}</span>
-                {points > 0 && <span className="shrink-0 text-xs font-bold text-emerald-700">+{points}</span>}
+                {points !== 0 && <span className={`shrink-0 text-xs font-bold ${points < 0 ? "text-red-700" : "text-emerald-700"}`}>{formatPoints(points)}</span>}
               </button>
             );
           })}

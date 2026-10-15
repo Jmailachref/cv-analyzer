@@ -43,7 +43,6 @@ export default function OfferForm({ offer, onSaved, onCancel }: Props) {
         title: title.trim(),
         skills: filledSkills.map((s) => ({ name: s.name.trim(), priority: s.priority })),
         criteria,
-        settings: offer?.settings,
       });
       onSaved(saved);
     } catch (e) {

@@ -58,7 +58,6 @@ def test_an_offer_gets_a_grid_built_from_its_skills(client):
         ("sql", 0.5, 0.0),
         ("docker", 0.1, 0.0),
     ]
-    assert grid["settings"] == {"penalty_cap": 50, "auto_weight": 0.6, "manual_cap": 20}
 
 
 def test_offer_validation(client):
@@ -97,13 +96,14 @@ def test_upload_read_and_score(client, events):
     assert client.get(f"/v1/documents/{doc['id']}/file", headers=RH).content == CV_GOOD
 
     score = client.get(f"/v1/documents/{doc['id']}/score", headers=RH).json()
-    assert (score["auto"], score["manual"], score["final"], score["grid_version"]) == (100.0, None, 100.0, 1)
+    # Python +1, SQL +0.5, Docker +0.1; no recruiter points yet.
+    assert (score["auto"], score["manual"], score["total"], score["grid_version"]) == (1.6, 0, 1.6, 1)
     found = {c["id"]: c["lines"] for c in score["analysis"]["details"]["criteria"] if c["found"]}
     assert found == {"python": [3], "sql": [3], "docker": [5]}
 
     assert [e[1] for e in events] == ["document.processed", "analysis.done"]
     assert events[0][2]["offer_ref"] == "offer-1"
-    assert events[1][0] == "recrutehub" and events[1][2]["external_ref"] == "cand-1" and events[1][2]["score"] == 100
+    assert events[1][0] == "recrutehub" and events[1][2]["external_ref"] == "cand-1" and events[1][2]["score"] == 1.6
     assert events[1][2]["offer_ref"] == "offer-1" and events[1][2]["grid_version"] == 1
 
 
@@ -127,12 +127,11 @@ def test_highlights_add_a_manual_score(client):
     assert by_line["quote"] == "Modèles de machine learning en Python, requêtes SQL"
 
     score = client.get(f"/v1/documents/{doc['id']}/score", headers=RH).json()
-    # 6 points of 20 = 30; final = 0.6 × 100 + 0.4 × 30.
-    assert (score["manual_points"], score["manual"], score["final"]) == (6, 30.0, 72.0)
+    assert (score["auto"], score["manual"], score["total"]) == (1.6, 6, 7.6)
 
     assert client.delete(f"/v1/highlights/{by_line['id']}", headers=OTHER).status_code == 404
     assert client.delete(f"/v1/highlights/{by_line['id']}", headers=RH).status_code == 204
-    assert client.get(f"/v1/documents/{doc['id']}/score", headers=RH).json()["manual_points"] == 4
+    assert client.get(f"/v1/documents/{doc['id']}/score", headers=RH).json()["manual"] == 4
 
 
 def test_highlight_validation(client):
@@ -144,8 +143,9 @@ def test_highlight_validation(client):
     url = f"/v1/documents/{doc['id']}/highlights"
     assert client.post(url, json={"author_ref": "u", "line": 99, "points": 3}, headers=RH).json()["error"]["code"] == "invalid_range"
     assert client.post(url, json={"author_ref": "u", "start": 0, "end": 99999, "points": 3}, headers=RH).status_code == 400
-    assert client.post(url, json={"author_ref": "u", "line": 0, "points": 21}, headers=RH).status_code == 400
-    assert client.post(url, json={"author_ref": "u", "line": 0, "points": 15}, headers=RH).json()["points"] == 15
+    assert client.post(url, json={"author_ref": "u", "line": 0, "points": 101}, headers=RH).status_code == 400
+    assert client.post(url, json={"author_ref": "u", "line": 0, "points": 0}, headers=RH).status_code == 400
+    assert client.post(url, json={"author_ref": "u", "line": 0, "points": 100}, headers=RH).json()["points"] == 100
     assert client.post(url, json={"author_ref": "u", "start": 0, "end": 4, "line": 0, "points": 1}, headers=RH).status_code == 400
 
 
@@ -158,7 +158,7 @@ def test_ranking_and_rescoring_when_the_grid_changes(client):
     client.delete(f"/v1/documents/{pending['id']}", headers=RH)
 
     ranking = client.get("/v1/offers/offer-1/ranking", headers=RH).json()
-    assert [(r["rank"], r["external_ref"], r["final"]) for r in ranking] == [(1, "good", 100.0), (2, "weak", 0.0)]
+    assert [(r["rank"], r["external_ref"], r["total"]) for r in ranking] == [(1, "good", 1.6), (2, "weak", -20.0)]
     # Weak: no Python (-20), nothing gained.
     assert ranking[1]["missing"] == ["Python"]
 
@@ -173,8 +173,8 @@ def test_ranking_and_rescoring_when_the_grid_changes(client):
     assert drain() == 2
     weak_score = client.get(f"/v1/documents/{weak['id']}/score", headers=RH).json()
     assert weak_score["grid_version"] == 2
-    # 1 of 2.6 points = 38.5, minus 20 for the missing Python.
-    assert weak_score["auto"] == 18.5
+    # PHP +1, minus 20 for the missing Python.
+    assert weak_score["auto"] == -19
     history = client.get(f"/v1/documents/{good['id']}/analyses", headers=RH).json()
     assert [a["grid_version"] for a in history] == [2, 1]
 
@@ -187,7 +187,7 @@ def test_analyze_on_demand(client):
     drain()
     assert client.post(url, json={"analyzer": "magic"}, headers=RH).status_code == 400
     r = client.post(url, json={}, headers=RH)
-    assert r.status_code == 201 and r.json()["score"] == 100 and r.json()["analyzer"] == "keywords"
+    assert r.status_code == 201 and r.json()["score"] == 1.6 and r.json()["analyzer"] == "keywords"
     assert r.json()["offer_ref"] == "offer-1"
 
 
@@ -229,7 +229,7 @@ def test_deleting_an_offer_erases_its_cvs(client):
     assert client.delete("/v1/offers/offer-1", headers=RH).status_code == 204
     assert not stored.exists()
     assert client.get(f"/v1/documents/{doc['id']}", headers=RH).status_code == 404
-    assert client.get(f"/v1/documents/{kept['id']}/score", headers=RH).json()["auto"] == 100
+    assert client.get(f"/v1/documents/{kept['id']}/score", headers=RH).json()["auto"] == 1.6
 
 
 def test_unreadable_and_broken_pdfs(client, events):
@@ -265,7 +265,17 @@ def test_highlight_the_text_selected_in_the_pdf(client):
     missing = client.post(url, json={"author_ref": "u", "quote": "Kubernetes", "page": 1, "points": 1}, headers=RH)
     assert missing.json()["error"]["code"] == "quote_not_found"
     assert client.post(url, json={"author_ref": "u", "quote": "Docker", "line": 1, "points": 1}, headers=RH).status_code == 400
-    assert client.get(f"/v1/documents/{doc['id']}/score", headers=RH).json()["manual_points"] == 6
+    # A passage counts once: the same text again, or a passage overlapping a scored one, is refused.
+    again = client.post(url, json={"author_ref": "u", "quote": "Data scientist chez Acme", "page": 1, "points": 5}, headers=RH)
+    assert again.status_code == 409 and again.json()["error"]["code"] == "already_scored"
+    overlap = client.post(url, json={"author_ref": "u", "quote": "scientist chez", "page": 1, "points": 5}, headers=RH)
+    assert overlap.status_code == 409
+
+    # A red flag costs points; nothing bounds the total.
+    flag = client.post(url, json={"author_ref": "u", "quote": "Git", "page": 1, "points": -50, "comment": "red flag"}, headers=RH)
+    assert flag.status_code == 201, flag.text
+    score = client.get(f"/v1/documents/{doc['id']}/score", headers=RH).json()
+    assert (score["auto"], score["manual"], score["total"]) == (1.6, -44, -42.4)
 
 
 def test_list_offers(client):

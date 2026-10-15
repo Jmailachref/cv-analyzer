@@ -25,12 +25,6 @@ class Criterion(BaseModel):
     points_absent: float = Field(default=0.0, ge=-50, le=0, description="Points lost when missing (core skills)")
 
 
-class GridSettings(BaseModel):
-    penalty_cap: float = Field(default=50, ge=0, le=100, description="Most points penalties can take off the score")
-    auto_weight: float = Field(default=0.6, ge=0, le=1, description="Weight of the automatic score in the final one")
-    manual_cap: float = Field(default=20, gt=0, le=100, description="Highlight points that make a manual score of 100")
-
-
 class SkillIn(BaseModel):
     name: Term = Field(validation_alias=AliasChoices("name", "language"), description="RecruteHub's language works too")
     priority: int = Field(ge=1, le=5, description="1 core, 2 important, 3 secondary, 4 CV only, 5 bonus")
@@ -50,7 +44,6 @@ class OfferIn(BaseModel):
     criteria: list[Criterion] | None = Field(
         default=None, max_length=100, description="The grid, edited by a recruiter; built from skills when left out"
     )
-    settings: GridSettings = GridSettings()
 
     @model_validator(mode="after")
     def coherent(self) -> OfferIn:
@@ -75,7 +68,6 @@ class OfferOut(BaseModel):
     skills: list[SkillIn]
     grid_version: int
     criteria: list[Criterion]
-    settings: GridSettings
     created_at: datetime
     updated_at: datetime
 
@@ -155,11 +147,13 @@ class HighlightIn(BaseModel):
     boxes: list[Box] | None = Field(
         default=None, max_length=100, description="Where the selection is drawn on the PDF; from the lines if left out"
     )
-    points: int = Field(ge=1, le=20, description="What the passage is worth, 1 to 20")
+    points: int = Field(ge=-100, le=100, description="What the passage is worth, -100 to 100; negative for a red flag")
     comment: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
     def one_target(self) -> HighlightIn:
+        if self.points == 0:
+            raise ValueError("points cannot be 0")
         has_range = self.start is not None and self.end is not None
         targets = [has_range, self.line is not None, self.quote is not None]
         if sum(targets) != 1:
@@ -186,12 +180,10 @@ class ScoreOut(BaseModel):
     document_id: uuid.UUID
     offer_ref: str
     external_ref: str | None
-    grid_version: int | None = Field(description="The grid version the automatic score used")
-    auto: float | None = Field(description="Keyword score out of 100; null until the CV is read and scored")
-    manual: float | None = Field(description="Highlight points out of 100; null until someone highlights")
-    final: float | None
-    manual_points: int
-    settings: GridSettings = Field(description="How the scores combine: auto_weight, manual_cap, penalty_cap")
+    grid_version: int | None = Field(description="The grid version the keyword points used")
+    auto: float | None = Field(description="Keyword points; null until the CV is read and scored")
+    manual: int = Field(description="The sum of the recruiters' points, negative for red flags")
+    total: float | None = Field(description="auto + manual, unbounded; null until the CV is scored")
     analysis: AnalysisOut | None
     highlights: list[HighlightOut]
 
@@ -203,8 +195,8 @@ class RankingRow(BaseModel):
     filename: str
     status: DocumentStatus
     auto: float | None
-    manual: float | None
-    final: float | None
+    manual: int
+    total: float | None
     missing: list[str] = Field(description="Labels of criteria that cost points by being absent")
 
 

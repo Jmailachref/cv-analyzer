@@ -87,9 +87,9 @@ function Candidates({ offer }: { offer: Offer }) {
                   <th className="px-4 py-2 font-medium">#</th>
                   <th className="px-4 py-2 font-medium">Candidat</th>
                   <th className="px-4 py-2 font-medium">Statut</th>
-                  <th className="px-4 py-2 text-center font-medium">Auto</th>
+                  <th className="px-4 py-2 text-center font-medium">Mots-clés</th>
                   <th className="px-4 py-2 text-center font-medium">Recruteur</th>
-                  <th className="px-4 py-2 text-center font-medium">Final</th>
+                  <th className="px-4 py-2 text-center font-medium">Total</th>
                   <th className="px-4 py-2 font-medium">Essentielles manquantes</th>
                 </tr>
               </thead>
@@ -115,7 +115,7 @@ function Candidates({ offer }: { offer: Offer }) {
                       <ScoreBadge value={r.manual} />
                     </td>
                     <td className="px-4 py-2.5 text-center">
-                      <ScoreBadge value={r.final} className="text-base" />
+                      <ScoreBadge value={r.total} className="text-base" />
                     </td>
                     <td className="px-4 py-2.5 text-red-700">{r.missing.join(", ")}</td>
                   </tr>

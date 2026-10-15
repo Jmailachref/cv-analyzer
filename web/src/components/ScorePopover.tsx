@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { ApiError } from "../api";
 import { Button, ErrorBanner } from "./ui";
 
 type Props = {
@@ -11,14 +12,14 @@ type Props = {
 
 const WIDTH = 320;
 
-export const MAX_POINTS = 20;
+export const MAX_POINTS = 100;
 
-// The box a recruiter scores a selected passage in: a number of points and a comment.
+// The box a recruiter scores a selected passage in: points from -100 to +100 (negative for a red flag) and a comment.
 export default function ScorePopover({ quote, anchor, onSubmit, onClose }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const [points, setPoints] = useState("");
   const value = Number(points);
-  const valid = Number.isInteger(value) && value >= 1 && value <= MAX_POINTS;
+  const valid = points.trim() !== "" && Number.isInteger(value) && value !== 0 && Math.abs(value) <= MAX_POINTS;
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -45,7 +46,11 @@ export default function ScorePopover({ quote, anchor, onSubmit, onClose }: Props
     try {
       await onSubmit(value, comment.trim());
     } catch (e) {
-      setError(e);
+      setError(
+        e instanceof ApiError && e.code === "already_scored"
+          ? "Ce passage est déjà noté. Supprimez l'ancienne note pour le noter autrement."
+          : e,
+      );
       setBusy(false);
     }
   };
@@ -66,7 +71,7 @@ export default function ScorePopover({ quote, anchor, onSubmit, onClose }: Props
           autoFocus
           type="number"
           inputMode="numeric"
-          min={1}
+          min={-MAX_POINTS}
           max={MAX_POINTS}
           step={1}
           value={points}
@@ -74,11 +79,12 @@ export default function ScorePopover({ quote, anchor, onSubmit, onClose }: Props
           onKeyDown={(e) => {
             if (e.key === "Enter") submit();
           }}
-          placeholder="ex. 3"
+          placeholder="ex. 5 ou -50"
           className="w-24 rounded-md border border-slate-300 px-2 py-1.5 text-base font-semibold tabular-nums"
         />
-        <span className="text-xs text-slate-500">de 1 à {MAX_POINTS}</span>
+        <span className="text-xs text-slate-500">de −100 à +100</span>
       </label>
+      <p className="mt-1 text-xs text-slate-500">Un nombre négatif marque un red flag.</p>
       <textarea
         value={comment}
         onChange={(e) => setComment(e.target.value)}
@@ -96,8 +102,8 @@ export default function ScorePopover({ quote, anchor, onSubmit, onClose }: Props
         <Button variant="ghost" onClick={onClose}>
           Annuler
         </Button>
-        <Button variant="primary" onClick={submit} disabled={busy || !valid}>
-          {busy ? "…" : valid ? `Donner +${value}` : "Donner"}
+        <Button variant={value < 0 ? "danger" : "primary"} onClick={submit} disabled={busy || !valid}>
+          {busy ? "…" : !valid ? "Donner" : value > 0 ? `Donner +${value}` : `Retirer ${-value}`}
         </Button>
       </div>
     </div>

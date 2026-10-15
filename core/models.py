@@ -114,6 +114,7 @@ class Grid(Base):
     offer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("offers.id", ondelete="CASCADE"), index=True)
     version: Mapped[int] = mapped_column(Integer)
     criteria: Mapped[list] = mapped_column(Json)
+    # Kept for analyzers that need their own options; the keyword analyzer takes none.
     settings: Mapped[dict] = mapped_column(Json)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -140,7 +141,7 @@ class Highlight(Base):
 
     __tablename__ = "highlights"
     __table_args__ = (
-        CheckConstraint("points BETWEEN 1 AND 20", name="ck_highlights_points"),
+        CheckConstraint("points BETWEEN -100 AND 100 AND points <> 0", name="ck_highlights_points"),
         CheckConstraint('start >= 0 AND "end" > start', name="ck_highlights_range"),
     )
 

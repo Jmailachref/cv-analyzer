@@ -1,4 +1,4 @@
-"""Analyzers turn a CV's lines and a grid into a score out of 100 with its reasons.
+"""Analyzers turn a CV's lines and a grid into points, with their reasons.
 
 Every analyzer returns the same shape, so a better one (embeddings, an LLM)
 can replace or run beside the keyword analyzer without any client change.
@@ -48,16 +48,15 @@ def terms_of(criterion: dict) -> list[str]:
 
 
 class KeywordAnalyzer:
-    """Finds each criterion (a group of synonyms) in the CV; each counts once.
+    """Finds each criterion (a group of synonyms) in the CV; each counts once,
+    however often it appears.
 
-    score = max(0, gained / possible * 100 - min(penalty_cap, penalties))
-    where possible is the sum of the positive criteria's points, gained the
-    part of it found, and penalties the points lost to missing criteria and
-    to warning words that are present.
+    score = the sum of the points: points_present for each criterion found,
+    points_absent (0 or negative) for each one missing. No cap, no scale.
     """
 
     name = "keywords"
-    version = "1.0"
+    version = "2.0"
     description = "Keywords and synonyms, matched as whole words in the CV text."
 
     def analyze(self, lines: list[CvLine], criteria: list[dict], settings: dict) -> Result:
@@ -90,16 +89,12 @@ class KeywordAnalyzer:
                 }
             )
 
-        cap = float(settings.get("penalty_cap", 50))
-        base = gained / possible * 100 if possible else 100.0
-        applied = min(cap, penalties)
-        score = round(max(0.0, base - applied), 1)
         return Result(
-            score=score,
+            score=round(gained - penalties, 2),
             details={
-                "base": round(base, 1),
+                "possible": round(possible, 2),
+                "gained": round(gained, 2),
                 "penalties": round(penalties, 2),
-                "penalties_applied": round(applied, 2),
                 "criteria": results,
             },
         )

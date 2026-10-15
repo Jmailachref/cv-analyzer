@@ -12,8 +12,6 @@ export type Criterion = {
   points_absent: number;
 };
 
-export type GridSettings = { penalty_cap: number; auto_weight: number; manual_cap: number };
-
 export type OfferSummary = { external_ref: string; title: string; documents: number; updated_at: string };
 
 export type Offer = {
@@ -22,7 +20,6 @@ export type Offer = {
   skills: Skill[];
   grid_version: number;
   criteria: Criterion[];
-  settings: GridSettings;
   created_at: string;
   updated_at: string;
 };
@@ -31,7 +28,6 @@ export type OfferIn = {
   title: string;
   skills: Skill[];
   criteria?: Criterion[] | null;
-  settings?: GridSettings;
 };
 
 export type DocumentStatus = "queued" | "processing" | "ready" | "unreadable" | "failed";
@@ -104,7 +100,7 @@ export type Analysis = {
   analyzer: string;
   analyzer_version: string;
   score: number;
-  details: { base?: number; penalties?: number; penalties_applied?: number; criteria?: CriterionResult[] };
+  details: { possible?: number; gained?: number; penalties?: number; criteria?: CriterionResult[] };
   created_at: string;
 };
 
@@ -114,10 +110,8 @@ export type Score = {
   external_ref: string | null;
   grid_version: number | null;
   auto: number | null;
-  manual: number | null;
-  final: number | null;
-  manual_points: number;
-  settings: GridSettings;
+  manual: number;
+  total: number | null;
   analysis: Analysis | null;
   highlights: Highlight[];
 };
@@ -129,8 +123,8 @@ export type RankingRow = {
   filename: string;
   status: DocumentStatus;
   auto: number | null;
-  manual: number | null;
-  final: number | null;
+  manual: number;
+  total: number | null;
   missing: string[];
 };
 

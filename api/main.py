@@ -15,8 +15,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from analysis.analyzers import ANALYZERS, DEFAULT_ANALYZER
-from analysis.scoring import final_score, grid_from, manual_score
-from analysis.text import locate
+from analysis.scoring import grid_from, total_points
+from analysis.text import locate, normalize
 from api import schemas
 from api.auth import client_id
 from core import storage
@@ -104,7 +104,6 @@ def offer_out(o: Offer, g: Grid) -> schemas.OfferOut:
         skills=o.skills,
         grid_version=g.version,
         criteria=g.criteria,
-        settings=g.settings,
         created_at=o.created_at,
         updated_at=o.updated_at,
     )
@@ -149,10 +148,19 @@ def line_boxes(d: Document, start: int, end: int) -> list[dict]:
 
 
 def latest_analyses(db: Session, grid: Grid, document_ids: list[uuid.UUID]) -> dict[uuid.UUID, Analysis]:
-    """The newest default-analyzer result per document for this grid version."""
+    """The newest result of the current default analyzer per document for this grid version.
+
+    Results of an older analyzer version are ignored: the worker scores those CVs again.
+    """
+    current = ANALYZERS[DEFAULT_ANALYZER]
     rows = db.scalars(
         select(Analysis)
-        .where(Analysis.grid_id == grid.id, Analysis.document_id.in_(document_ids), Analysis.analyzer == DEFAULT_ANALYZER)
+        .where(
+            Analysis.grid_id == grid.id,
+            Analysis.document_id.in_(document_ids),
+            Analysis.analyzer == current.name,
+            Analysis.analyzer_version == current.version,
+        )
         .order_by(Analysis.created_at)
     )
     return {a.document_id: a for a in rows}
@@ -327,9 +335,9 @@ def save_offer(ref: str, body: schemas.OfferIn, db: Db, client: Client) -> schem
     criteria = data["criteria"] if body.criteria is not None else grid_from(data["skills"])
     db.flush()
     grid = latest_grid(db, offer.id)
-    changed = grid is None or (grid.criteria, grid.settings) != (criteria, data["settings"])
+    changed = grid is None or grid.criteria != criteria
     if changed:
-        grid = Grid(offer=offer, version=grid.version + 1 if grid else 1, criteria=criteria, settings=data["settings"])
+        grid = Grid(offer=offer, version=grid.version + 1 if grid else 1, criteria=criteria, settings={})
         db.add(grid)
     db.commit()
     db.refresh(offer)
@@ -359,7 +367,7 @@ def delete_offer(ref: str, db: Db, client: Client) -> Response:
 
 @app.get("/v1/offers/{ref}/ranking", response_model=list[schemas.RankingRow], tags=["offers"])
 def ranking(ref: str, db: Db, client: Client) -> list[schemas.RankingRow]:
-    """Every CV sent for this offer, best final score first; CVs not scored yet come last."""
+    """Every CV sent for this offer, most points first; CVs not scored yet come last."""
     offer = own_offer(db, client, ref)
     grid = latest_grid(db, offer.id)
     documents = list(db.scalars(select(Document).where(Document.offer_id == offer.id)))
@@ -369,7 +377,7 @@ def ranking(ref: str, db: Db, client: Client) -> list[schemas.RankingRow]:
     for d in documents:
         a = analyses.get(d.id)
         auto = a.score if a else None
-        manual = manual_score([h.points for h in highlights.get(d.id, [])], grid.settings)
+        manual = [h.points for h in highlights.get(d.id, [])]
         missing = [
             c["label"]
             for c in (a.details.get("criteria", []) if a else [])
@@ -383,14 +391,14 @@ def ranking(ref: str, db: Db, client: Client) -> list[schemas.RankingRow]:
                 filename=d.filename,
                 status=d.status,
                 auto=auto,
-                manual=manual,
-                final=final_score(auto, manual, grid.settings),
+                manual=sum(manual),
+                total=total_points(auto, manual),
                 missing=missing,
             )
         )
-    rows.sort(key=lambda r: (r.final is None, -(r.final or 0)))
+    rows.sort(key=lambda r: (r.total is None, -(r.total or 0)))
     for i, r in enumerate(rows):
-        r.rank = i + 1 if r.final is not None else None
+        r.rank = i + 1 if r.total is not None else None
     return rows
 
 
@@ -434,10 +442,12 @@ def list_analyses(document_id: uuid.UUID, db: Db, client: Client) -> list[schema
     "/v1/documents/{document_id}/highlights", response_model=schemas.HighlightOut, status_code=201, tags=["highlights"]
 )
 def add_highlight(document_id: uuid.UUID, body: schemas.HighlightIn, db: Db, client: Client) -> schemas.HighlightOut:
-    """A recruiter marks a passage as worth 1 to 5 points.
+    """A recruiter gives a passage -100 to 100 points; negative for a red flag.
 
     The passage is the text selected in the PDF (`quote`, with its `page`), a character
     range, or a whole line. Pass the selection's `boxes` to draw it back exactly.
+    A passage counts once: one that overlaps a scored passage, or the same text
+    scored elsewhere in the CV, is refused.
     """
     d = own_document(db, client, document_id)
     if d.status != "ready" or not d.text:
@@ -461,6 +471,12 @@ def add_highlight(document_id: uuid.UUID, body: schemas.HighlightIn, db: Db, cli
     quote = d.text[start:end]
     if not quote.strip():
         raise api_error(400, "invalid_range", "the passage is empty")
+    key = "".join(normalize(quote).split())
+    for other in highlights_of(db, [d.id]).get(d.id, []):
+        if start < other.end and end > other.start:
+            raise api_error(409, "already_scored", f"this passage overlaps « {other.quote} », already scored")
+        if "".join(normalize(other.quote).split()) == key:
+            raise api_error(409, "already_scored", f"« {other.quote} » is already scored elsewhere in this CV")
     h = Highlight(
         document_id=d.id,
         author_ref=body.author_ref,
@@ -498,23 +514,21 @@ def delete_highlight(highlight_id: uuid.UUID, db: Db, client: Client) -> Respons
 
 @app.get("/v1/documents/{document_id}/score", response_model=schemas.ScoreOut, tags=["scores"])
 def document_score(document_id: uuid.UUID, db: Db, client: Client) -> schemas.ScoreOut:
-    """The automatic, manual and final scores of one CV for its offer, with every point explained."""
+    """One CV's points for its offer: keyword points plus recruiters' points, every point explained."""
     d = own_document(db, client, document_id)
     grid = latest_grid(db, d.offer_id)
     a = latest_analyses(db, grid, [d.id]).get(d.id)
     marks = highlights_of(db, [d.id]).get(d.id, [])
     auto = a.score if a else None
-    manual = manual_score([h.points for h in marks], grid.settings)
+    manual = [h.points for h in marks]
     return schemas.ScoreOut(
         document_id=d.id,
         offer_ref=d.offer.external_ref,
         external_ref=d.external_ref,
         grid_version=grid.version if a else None,
         auto=auto,
-        manual=manual,
-        final=final_score(auto, manual, grid.settings),
-        manual_points=sum(h.points for h in marks),
-        settings=grid.settings,
+        manual=sum(manual),
+        total=total_points(auto, manual),
         analysis=analysis_out(a, grid) if a else None,
         highlights=[highlight_out(h) for h in marks],
     )

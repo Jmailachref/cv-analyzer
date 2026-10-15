@@ -47,17 +47,22 @@ export function formatScore(value: number | null | undefined): string {
   return value === null || value === undefined ? "–" : String(Math.round(value * 10) / 10);
 }
 
+// Points have no bound: green when they count for the candidate, red against.
 export function scoreColor(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "bg-slate-100 text-slate-500";
-  if (value >= 70) return "bg-emerald-100 text-emerald-800";
-  if (value >= 40) return "bg-amber-100 text-amber-800";
-  return "bg-red-100 text-red-800";
+  if (value === null || value === undefined || value === 0) return "bg-slate-100 text-slate-500";
+  return value > 0 ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-800";
+}
+
+export function formatPoints(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "–";
+  const n = Math.round(value * 10) / 10;
+  return n > 0 ? `+${n}` : n < 0 ? `−${-n}` : "0";
 }
 
 export function ScoreBadge({ value, className = "" }: { value: number | null | undefined; className?: string }) {
   return (
     <span className={`inline-flex min-w-12 justify-center rounded-full px-2 py-0.5 text-sm font-semibold tabular-nums ${scoreColor(value)} ${className}`}>
-      {formatScore(value)}
+      {formatPoints(value)}
     </span>
   );
 }
