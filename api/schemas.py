@@ -74,6 +74,13 @@ class OfferIn(BaseModel):
         return self
 
 
+class OfferSummary(BaseModel):
+    external_ref: str
+    title: str
+    documents: int
+    updated_at: datetime
+
+
 class OfferOut(BaseModel):
     external_ref: str
     title: str
@@ -139,19 +146,37 @@ class AnalysisOut(BaseModel):
     created_at: datetime
 
 
+class Box(BaseModel):
+    """A rectangle on a page, in PDF points from the page's top left corner."""
+
+    page: int = Field(ge=1)
+    x0: float
+    top: float
+    x1: float
+    bottom: float
+
+
 class HighlightIn(BaseModel):
     author_ref: Ref = Field(description="Who highlighted, in the caller's terms (RecruteHub: the user id)")
-    start: int | None = Field(default=None, ge=0, description="Character offset in the document text")
+    quote: str | None = Field(
+        default=None, max_length=5000, description="The text selected in the PDF; the engine finds it in the CV"
+    )
+    page: int | None = Field(default=None, ge=1, description="The page the quote was selected on")
+    start: int | None = Field(default=None, ge=0, description="Or a character range in the document text")
     end: int | None = Field(default=None, ge=1)
     line: int | None = Field(default=None, ge=0, description="Or a whole line, by its number")
+    boxes: list[Box] | None = Field(
+        default=None, max_length=100, description="Where the selection is drawn on the PDF; from the lines if left out"
+    )
     points: int = Field(ge=1, le=5)
     comment: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
     def one_target(self) -> HighlightIn:
         has_range = self.start is not None and self.end is not None
-        if has_range == (self.line is not None):
-            raise ValueError("give either start and end, or line")
+        targets = [has_range, self.line is not None, self.quote is not None]
+        if sum(targets) != 1:
+            raise ValueError("give one of quote, start and end, or line")
         if has_range and self.end <= self.start:
             raise ValueError("end must be after start")
         return self
@@ -164,6 +189,7 @@ class HighlightOut(BaseModel):
     start: int
     end: int
     quote: str
+    boxes: list[Box]
     points: int
     comment: str | None
     created_at: datetime
@@ -186,6 +212,7 @@ class RankingRow(BaseModel):
     rank: int | None
     document_id: uuid.UUID
     external_ref: str | None
+    filename: str
     status: DocumentStatus
     auto: float | None
     manual: float | None

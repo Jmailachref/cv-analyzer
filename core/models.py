@@ -151,6 +151,8 @@ class Highlight(Base):
     start: Mapped[int] = mapped_column(Integer)
     end: Mapped[int] = mapped_column(Integer)
     quote: Mapped[str] = mapped_column(Text)
+    # Where it is drawn on the PDF: [{"page": 1, "x0": .., "top": .., "x1": .., "bottom": ..}].
+    boxes: Mapped[list] = mapped_column(Json, default=list, server_default=sql_text("'[]'"))
     points: Mapped[int] = mapped_column(Integer)
     comment: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

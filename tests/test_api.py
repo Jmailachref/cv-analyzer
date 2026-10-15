@@ -1,7 +1,9 @@
+import dataclasses
 from pathlib import Path
 
 from conftest import OTHER, RH, drain, make_pdf
 
+from api import auth
 from core.config import settings
 
 CV_GOOD = make_pdf(
@@ -239,3 +241,45 @@ def test_unreadable_and_broken_pdfs(client, events):
     failed = client.get(f"/v1/documents/{broken['id']}", headers=RH).json()
     assert failed["status"] == "failed" and failed["error"]
     assert [e[2]["status"] for e in events] == ["unreadable", "failed"]
+
+
+def test_highlight_the_text_selected_in_the_pdf(client):
+    create_offer(client)
+    doc = upload(client).json()
+    drain()
+    url = f"/v1/documents/{doc['id']}/highlights"
+    # A PDF viewer spaces and cases words its own way; accents may be lost too.
+    picked = client.post(
+        url, json={"author_ref": "u", "quote": "data  SCIENTIST chez acme", "page": 1, "points": 5, "comment": "top"}, headers=RH
+    )
+    assert picked.status_code == 201, picked.text
+    h = picked.json()
+    assert h["quote"] == "Data scientist chez Acme"
+    # Without boxes from the viewer, the boxes are the lines the passage covers.
+    assert len(h["boxes"]) == 1 and h["boxes"][0]["page"] == 1 and h["boxes"][0]["x0"] < h["boxes"][0]["x1"]
+
+    drawn = [{"page": 1, "x0": 10, "top": 20, "x1": 60, "bottom": 30}]
+    exact = client.post(url, json={"author_ref": "u", "quote": "Docker", "page": 1, "boxes": drawn, "points": 1}, headers=RH)
+    assert exact.json()["boxes"] == [{"page": 1, "x0": 10.0, "top": 20.0, "x1": 60.0, "bottom": 30.0}]
+
+    missing = client.post(url, json={"author_ref": "u", "quote": "Kubernetes", "page": 1, "points": 1}, headers=RH)
+    assert missing.json()["error"]["code"] == "quote_not_found"
+    assert client.post(url, json={"author_ref": "u", "quote": "Docker", "line": 1, "points": 1}, headers=RH).status_code == 400
+    assert client.get(f"/v1/documents/{doc['id']}/score", headers=RH).json()["manual_points"] == 6
+
+
+def test_list_offers(client):
+    create_offer(client)
+    create_offer(client, ref="offer-2", body={**OFFER, "title": "Backend"})
+    upload(client)
+    rows = client.get("/v1/offers", headers=RH).json()
+    assert [(r["external_ref"], r["title"], r["documents"]) for r in rows] == [("offer-2", "Backend", 0), ("offer-1", "Data scientist", 1)]
+    assert client.get("/v1/offers", headers=OTHER).json() == []
+
+
+def test_an_open_client_needs_no_api_key(client, monkeypatch):
+    assert client.get("/v1/offers").status_code == 401
+    monkeypatch.setattr(auth, "settings", dataclasses.replace(settings, open_client="recrutehub"))
+    create_offer(client)
+    assert [r["external_ref"] for r in client.get("/v1/offers").json()] == ["offer-1"]
+    assert client.get("/v1/offers", headers={"Authorization": "Bearer nope"}).status_code == 401

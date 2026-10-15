@@ -1,6 +1,6 @@
 from analysis.analyzers import CvLine, KeywordAnalyzer, terms_of
 from analysis.scoring import final_score, manual_score
-from analysis.text import normalize, term_pattern
+from analysis.text import locate, normalize, term_pattern
 
 SETTINGS = {"penalty_cap": 50, "auto_weight": 0.6, "manual_cap": 20}
 
@@ -78,3 +78,14 @@ def test_final_score_weighs_auto_and_highlights():
     assert final_score(70, None, SETTINGS) == 70
     assert final_score(70, 50, SETTINGS) == 62
     assert final_score(None, 50, SETTINGS) is None
+
+
+def test_locate_finds_a_quote_whatever_its_spacing():
+    text = "Développeur Python\nData   scientist chez Acme\nData scientist junior"
+    start, end = locate(text, "data scientist")
+    assert text[start:end] == "Data   scientist"
+    start, end = locate(text, "DATA SCIENTIST", within=(text.index("Data scientist junior"), len(text)))
+    assert text[start:end] == "Data scientist" and start == text.index("Data scientist junior")
+    assert locate(text, "developpeur python") == (0, 18)
+    assert locate(text, "Java") is None
+    assert locate(text, "   ") is None

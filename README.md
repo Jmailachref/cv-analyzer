@@ -18,8 +18,17 @@ https://claude.ai/code/artifact/9daf60be-c8b5-4f8c-bd7d-babb3532a226
 docker compose up -d --build
 ```
 
-The API is on http://localhost:8100, its interactive docs on
-http://localhost:8100/docs. The development API key is `dev-key`:
+Where the containers cannot reach each other (seen in some GitHub
+Codespaces: the migration times out connecting to Postgres), run every
+service on the host's network instead; everything is then on port 8000:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.host.yml up -d --build
+```
+
+The web app is on http://localhost:8100 and needs no sign-in. The API's
+interactive docs are on http://localhost:8100/docs. Calls from elsewhere use
+the development API key `dev-key`:
 
 ```sh
 curl -X PUT -H "Authorization: Bearer dev-key" -H "Content-Type: application/json" \
@@ -31,7 +40,7 @@ curl -H "Authorization: Bearer dev-key" -F file=@cv.pdf -F offer_ref=offer-1 -F 
 
 | Container | What it does |
 |---|---|
-| api | FastAPI, `/v1` routes |
+| api | FastAPI: the `/v1` routes, and the web app under `/app` |
 | worker | reads PDFs (pdfplumber, Tesseract OCR for scans) and scores them, from a Redis queue |
 | postgres | offers and their grids, documents, lines, analyses, highlights |
 | redis | the job queue |
@@ -108,6 +117,31 @@ which words, and what each one gained or cost. The scores rank candidates;
 they never reject anyone on their own. That decision stays with a person
 (GDPR, article 22).
 
+## The web app
+
+A React app (`web/`) the API serves under `/app`, for recruiters:
+
+- **Offers**: create an offer with its skills ranked 1 to 5 and its warning
+  words, and adjust the grid it builds (more words per criterion, other
+  points).
+- **Candidates**: drop CVs (several at once), then follow the ranking as they
+  are read and scored: automatic, recruiter and final scores, and the core
+  skills each CV is missing.
+- **A CV**: the PDF itself. Select a passage, give it +1 to +5 and a comment;
+  it stays highlighted on the PDF and counts in the recruiter score at once.
+  Hovering a skill the engine found outlines the lines it was found on. A
+  scanned CV is scored from the text OCR read, line by line.
+
+It has no sign-in: with `OPEN_CLIENT` set (compose sets `dev`), requests
+without an API key act as that client. Leave `OPEN_CLIENT` empty anywhere
+else. The recruiter's name, typed in the header, labels their highlights.
+
+To work on it with live reload, run the stack, then:
+
+```sh
+cd web && npm install && npm run dev   # http://localhost:5173/app/, proxies /v1 to :8100
+```
+
 ## API
 
 Every `/v1` route takes `Authorization: Bearer <API key>`. Each key belongs
@@ -116,6 +150,7 @@ like `{"error": {"code": "not_found", "message": "..."}}`.
 
 | Route | What it does |
 |---|---|
+| `GET /v1/offers` | the offers, last updated first, with their number of CVs |
 | `PUT /v1/offers/{ref}` | create or update an offer: `title`, `skills`, `alerts`, optional `criteria` and `settings`; rescores its CVs when the grid changes |
 | `GET /v1/offers/{ref}` | the offer and its latest grid |
 | `DELETE /v1/offers/{ref}` | erase the offer and every CV sent for it |
@@ -127,8 +162,8 @@ like `{"error": {"code": "not_found", "message": "..."}}`.
 | `DELETE /v1/documents/{id}` | erase the PDF, text, scores and highlights |
 | `POST /v1/documents/{id}/analyses` | score now against the offer's latest grid (`analyzer`) |
 | `GET /v1/documents/{id}/analyses` | every score the CV got, across grid versions and analyzers |
-| `POST /v1/documents/{id}/highlights` | highlight a passage: `start` and `end` in the text, or a `line`; `points` 1 to 5, `author_ref`, `comment` |
-| `GET /v1/documents/{id}/highlights` | the passages highlighted |
+| `POST /v1/documents/{id}/highlights` | highlight a passage: the `quote` selected in the PDF and its `page`, `start` and `end` in the text, or a `line`; `points` 1 to 5, `author_ref`, `comment`, and the selection's `boxes` to draw it back |
+| `GET /v1/documents/{id}/highlights` | the passages highlighted, with their boxes on the PDF |
 | `DELETE /v1/highlights/{id}` | remove one |
 | `GET /v1/documents/{id}/score` | auto, manual and final scores, with every point explained |
 | `GET /v1/analyzers` | the analyzers and their versions |
@@ -187,6 +222,7 @@ The mapping:
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis |
 | `QUEUE_NAME` | `cva:jobs` | the Redis list jobs go through |
 | `API_KEYS` | `dev:dev-key` | `client:key,client:key` |
+| `OPEN_CLIENT` | empty | requests without an API key act as this client (local use; compose sets `dev`) |
 | `WEBHOOKS` | empty | `client:url,client:url` |
 | `WEBHOOK_SECRET` | empty | signs webhook bodies |
 | `STORAGE` | `local` | `s3` or `local` |
@@ -203,6 +239,7 @@ test, Tesseract (`apt install tesseract-ocr tesseract-ocr-fra`).
 ```sh
 pip install -r requirements-dev.txt
 TEST_DATABASE_URL=postgresql+psycopg://cva:cva@localhost:5432/cva_test python -m pytest -q
+cd web && npm ci && npm run build   # typecheck and build the web app
 ```
 
 ## Adding an analyzer
@@ -218,10 +255,11 @@ later, `llm`.
 ## Layout
 
 ```
-api/          FastAPI app: routes, schemas, API keys
+api/          FastAPI app: routes, schemas, API keys; serves web/dist under /app
 core/         settings, database, models, queue, PDF storage, webhooks
 analysis/     PDF extraction and OCR, text matching, synonyms, analyzers, final score
 worker/       the queue worker
+web/          the web app: React, TypeScript, Tailwind, pdf.js
 migrations/   Alembic
 tests/
 ```

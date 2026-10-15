@@ -1,12 +1,14 @@
 # Local stack: Postgres, Redis, S3 storage (SeaweedFS), the API on :8100 and one worker.
 # The API creates the bucket on the first upload.
 #   docker compose up -d --build
-#   open http://localhost:8100/docs
+#   open http://localhost:8100 (the web app) or http://localhost:8100/docs (the API)
 x-app: &app
   environment:
     DATABASE_URL: postgresql+psycopg://cva:cva@postgres:5432/cva
     REDIS_URL: redis://redis:6379/0
     API_KEYS: ${API_KEYS:-dev:dev-key}
+    # The web app on http://localhost:8100 needs no key: requests without one act as "dev".
+    OPEN_CLIENT: ${OPEN_CLIENT:-dev}
     WEBHOOKS: ${WEBHOOKS:-}
     WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
     STORAGE: s3

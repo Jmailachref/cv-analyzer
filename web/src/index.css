@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+}
+
+/* Selected text in the PDF (pdf.js draws its own text layer over each page). */
+.textLayer ::selection {
+  background: rgb(37 99 235 / 0.35);
+}

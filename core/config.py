@@ -32,6 +32,9 @@ class Settings:
     # Where each client wants events: "recrutehub:http://candidates:8000/internal/cv-events".
     webhooks: dict[str, str] = field(default_factory=lambda: _pairs(os.environ.get("WEBHOOKS", ""), "WEBHOOKS"))
     # Signs webhook bodies (HMAC-SHA256 in X-CVA-Signature). Empty sends them unsigned.
+    # Requests without an API key act as this client: for the bundled web app on a
+    # developer's machine. Empty (the default) means every request needs a key.
+    open_client: str = field(default_factory=lambda: os.environ.get("OPEN_CLIENT", ""))
     webhook_secret: str = field(default_factory=lambda: os.environ.get("WEBHOOK_SECRET", ""))
 
     # PDF storage: "s3" (SeaweedFS, MinIO, AWS) or "local" (a folder, for development and tests).

@@ -21,6 +21,29 @@ def normalize(text: str) -> str:
     return "".join(out)
 
 
+def locate(text: str, quote: str, within: tuple[int, int] | None = None) -> tuple[int, int] | None:
+    """Where a quote copied from the PDF sits in the extracted text, as (start, end).
+
+    Spaces, case and accents are ignored on both sides, because a PDF viewer and
+    the extractor rarely space words the same way. The first match inside
+    `within` wins, else the first match anywhere.
+    """
+    norm = normalize(text)
+    kept = [i for i, ch in enumerate(norm) if not ch.isspace()]
+    compact = "".join(norm[i] for i in kept)
+    needle = "".join(ch for ch in normalize(quote) if not ch.isspace())
+    if not needle:
+        return None
+    first, pos = None, compact.find(needle)
+    while pos != -1:
+        start, end = kept[pos], kept[pos + len(needle) - 1] + 1
+        if within is None or within[0] <= start < within[1]:
+            return start, end
+        first = first or (start, end)
+        pos = compact.find(needle, pos + 1)
+    return first
+
+
 def term_pattern(term: str) -> re.Pattern:
     """A term as a whole word: "go" does not match "google", "c++" matches "C++,"."""
     words = normalize(term).split()

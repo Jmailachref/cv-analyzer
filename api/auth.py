@@ -9,7 +9,9 @@ bearer = HTTPBearer(auto_error=False)
 
 
 def client_id(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> str:
-    """The calling application's id, from its API key. Each client sees only its own CVs and grids."""
+    """The calling application's id, from its API key. Each client sees only its own offers and CVs."""
+    if credentials is None and settings.open_client:
+        return settings.open_client
     if credentials is None or credentials.credentials not in settings.api_keys:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="invalid or missing API key")
     return settings.api_keys[credentials.credentials]

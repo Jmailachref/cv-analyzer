@@ -3,17 +3,20 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from analysis.analyzers import ANALYZERS, DEFAULT_ANALYZER
 from analysis.scoring import final_score, grid_from, manual_score
+from analysis.text import locate
 from api import schemas
 from api.auth import client_id
 from core import storage
@@ -130,10 +133,20 @@ def highlight_out(h: Highlight) -> schemas.HighlightOut:
         start=h.start,
         end=h.end,
         quote=h.quote,
+        boxes=h.boxes or [],
         points=h.points,
         comment=h.comment,
         created_at=h.created_at,
     )
+
+
+def line_boxes(d: Document, start: int, end: int) -> list[dict]:
+    """The boxes of the lines a passage covers (OCR lines have none)."""
+    return [
+        {"page": ln.page, "x0": ln.bbox[0], "top": ln.bbox[1], "x1": ln.bbox[2], "bottom": ln.bbox[3]}
+        for ln in d.lines
+        if ln.bbox and ln.start < end and ln.end > start
+    ]
 
 
 def latest_analyses(db: Session, grid: Grid, document_ids: list[uuid.UUID]) -> dict[uuid.UUID, Analysis]:
@@ -159,6 +172,16 @@ def highlights_of(db: Session, document_ids: list[uuid.UUID]) -> dict[uuid.UUID,
 
 
 # --- service ----------------------------------------------------------------
+
+
+# The web app (web/, built into web/dist): offers, CVs, and scoring passages in the PDF.
+WEB_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"
+if WEB_DIR.is_dir():
+    app.mount("/app", StaticFiles(directory=WEB_DIR, html=True), name="web")
+
+    @app.get("/", include_in_schema=False)
+    def home() -> RedirectResponse:
+        return RedirectResponse("/app/")
 
 
 @app.get("/health", tags=["service"])
@@ -272,6 +295,21 @@ def delete_document(document_id: uuid.UUID, db: Db, client: Client) -> Response:
 # --- offers -----------------------------------------------------------------
 
 
+@app.get("/v1/offers", response_model=list[schemas.OfferSummary], tags=["offers"])
+def list_offers(db: Db, client: Client) -> list[schemas.OfferSummary]:
+    """The client's offers, last updated first, with how many CVs each has."""
+    counts = dict(
+        db.execute(
+            select(Document.offer_id, func.count()).where(Document.client_id == client).group_by(Document.offer_id)
+        ).all()
+    )
+    offers = db.scalars(select(Offer).where(Offer.client_id == client).order_by(Offer.updated_at.desc()))
+    return [
+        schemas.OfferSummary(external_ref=o.external_ref, title=o.title, documents=counts.get(o.id, 0), updated_at=o.updated_at)
+        for o in offers
+    ]
+
+
 @app.put("/v1/offers/{ref}", response_model=schemas.OfferOut, tags=["offers"])
 def save_offer(ref: str, body: schemas.OfferIn, db: Db, client: Client) -> schemas.OfferOut:
     """Creates or updates the offer ref (RecruteHub: the job offer's id).
@@ -343,6 +381,7 @@ def ranking(ref: str, db: Db, client: Client) -> list[schemas.RankingRow]:
                 rank=None,
                 document_id=d.id,
                 external_ref=d.external_ref,
+                filename=d.filename,
                 status=d.status,
                 auto=auto,
                 manual=manual,
@@ -396,7 +435,11 @@ def list_analyses(document_id: uuid.UUID, db: Db, client: Client) -> list[schema
     "/v1/documents/{document_id}/highlights", response_model=schemas.HighlightOut, status_code=201, tags=["highlights"]
 )
 def add_highlight(document_id: uuid.UUID, body: schemas.HighlightIn, db: Db, client: Client) -> schemas.HighlightOut:
-    """A recruiter marks a passage (a character range, or a whole line) as worth 1 to 5 points."""
+    """A recruiter marks a passage as worth 1 to 5 points.
+
+    The passage is the text selected in the PDF (`quote`, with its `page`), a character
+    range, or a whole line. Pass the selection's `boxes` to draw it back exactly.
+    """
     d = own_document(db, client, document_id)
     if d.status != "ready" or not d.text:
         raise api_error(409, "not_ready", f"the document is {d.status}, not ready")
@@ -405,6 +448,13 @@ def add_highlight(document_id: uuid.UUID, body: schemas.HighlightIn, db: Db, cli
         if line is None:
             raise api_error(400, "invalid_range", f"the document has no line {body.line}")
         start, end = line.start, line.end
+    elif body.quote is not None:
+        on_page = [ln for ln in d.lines if ln.page == body.page]
+        within = (on_page[0].start, on_page[-1].end + 1) if on_page else None
+        found = locate(d.text, body.quote, within)
+        if found is None:
+            raise api_error(400, "quote_not_found", "the selected text was not found in the CV's text")
+        start, end = found
     else:
         start, end = body.start, body.end
     if end > len(d.text):
@@ -418,6 +468,7 @@ def add_highlight(document_id: uuid.UUID, body: schemas.HighlightIn, db: Db, cli
         start=start,
         end=end,
         quote=quote,
+        boxes=[b.model_dump() for b in body.boxes] if body.boxes else line_boxes(d, start, end),
         points=body.points,
         comment=body.comment,
     )
