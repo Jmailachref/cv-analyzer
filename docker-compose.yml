@@ -65,6 +65,7 @@ services:
 
   api:
     <<: *app
+    build: { context: ., target: api }
     image: cv-analyzer/api:local
     ports:
       - "8100:8000"
