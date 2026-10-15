@@ -1,6 +1,8 @@
 """An offer's grid, and a CV's points: the keyword points plus the recruiters' points."""
 from __future__ import annotations
 
+import re
+
 from analysis.text import normalize
 
 # Points a skill earns by priority (1 core ... 5 bonus) when present, and costs when missing.
@@ -16,7 +18,8 @@ def grid_from(skills: list[dict]) -> list[dict]:
     criteria, used = [], set()
 
     def slug(name: str) -> str:
-        base = "-".join(normalize(name).split())[:50] or "criterion"
+        # The id a grid accepts back: lowercase letters, digits and _ . + # / -
+        base = re.sub(r"[^a-z0-9_.+#/]+", "-", normalize(name)).strip("-")[:50] or "criterion"
         base = base if base[0].isalnum() else f"c{base}"
         out, i = base, 2
         while out in used:

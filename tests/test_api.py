@@ -78,6 +78,13 @@ def test_changing_skills_keeps_the_grid_a_recruiter_edited(client):
     assert rebuilt["criteria"][1]["terms"] == []
 
 
+def test_grid_ids_can_be_sent_back(client):
+    skills = [{"name": "R&D", "priority": 4}, {"name": "C++", "priority": 3}, {"name": "Power BI", "priority": 5}]
+    grid = create_offer(client, body={"title": "x", "skills": skills})["criteria"]
+    assert [c["id"] for c in grid] == ["c++", "r-d", "power-bi"]
+    assert client.put("/v1/offers/offer-1", json={"title": "x", "skills": skills, "criteria": grid}, headers=RH).status_code == 200
+
+
 def test_offer_validation(client):
     costs_when_found = {"title": "x", "criteria": [{"id": "stage", "label": "stage", "points_present": -5}]}
     assert client.put("/v1/offers/offer-1", json=costs_when_found, headers=RH).status_code == 400
