@@ -1,0 +1,3 @@
+-r requirements.txt
+fpdf2>=2.8
+pytest>=8.0

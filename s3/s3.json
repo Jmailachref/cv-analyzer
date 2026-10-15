@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "cv-analyzer",
+      "credentials": [{ "accessKey": "cv-analyzer", "secretKey": "cv-analyzer-dev" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

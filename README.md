@@ -1,0 +1,212 @@
+# CV Analyzer
+
+Reads CVs (PDF, scanned or not), scores them against a grid of keywords, and
+keeps the passages recruiters highlight, through a REST API other projects
+call. It knows nothing about offers or candidates: callers pass their own
+references (`external_ref` for a CV, `grid_ref` for what it is scored
+against). RecruteHub is the first client.
+
+The design, with the reasoning behind the scoring rules:
+https://claude.ai/code/artifact/9daf60be-c8b5-4f8c-bd7d-babb3532a226
+
+## Run it
+
+```sh
+docker compose up -d --build
+```
+
+The API is on http://localhost:8100, its interactive docs on
+http://localhost:8100/docs. The development API key is `dev-key`:
+
+```sh
+curl -H "Authorization: Bearer dev-key" -F file=@cv.pdf -F external_ref=cand-1 -F grid_ref=offer-1 \
+  http://localhost:8100/v1/documents
+```
+
+| Container | What it does |
+|---|---|
+| api | FastAPI, `/v1` routes |
+| worker | reads PDFs (pdfplumber, Tesseract OCR for scans) and scores them, from a Redis queue |
+| postgres | documents, lines, grids, analyses, highlights |
+| redis | the job queue |
+| s3, s3-setup | SeaweedFS, S3-compatible storage for the PDFs (bucket `cv-analyzer`) |
+| migrate | runs `alembic upgrade head`, then exits |
+
+## How a CV is scored
+
+1. **Upload.** `POST /v1/documents` stores the PDF and queues it. It answers
+   at once with the document's id and status `queued`.
+2. **Read.** The worker extracts the text line by line. Each line gets its
+   page, its section (experience, education, skills, ...) and its position
+   in the text; lines read from the PDF also get their box on the page, for
+   highlighting. Text the reader cannot see (white, or smaller than 4 pt) is
+   dropped. A page with almost no text is read with OCR. The status becomes
+   `ready`, `unreadable` (nothing to read, even with OCR) or `failed`.
+3. **Score.** When the document has a `grid_ref` and that grid exists, the
+   worker scores it at once. Saving a new version of a grid rescores every
+   ready CV sent with it.
+4. **Highlight.** A recruiter marks passages worth 1 to 5 points each.
+5. **Read the result.** `GET /v1/documents/{id}/score` or
+   `GET /v1/grids/{ref}/ranking`.
+
+### The grid
+
+A grid is a list of criteria. Each criterion is a group of words: its label,
+its own `terms`, and the engine's synonyms for the label (`JavaScript` also
+finds `JS`, `Node.js`; `SQL` finds `PostgreSQL`, `MySQL`; see
+`analysis/synonyms.py`). Matching ignores case and accents and takes whole
+words only, so `Go` does not match `Google`. A criterion counts once,
+however often it appears.
+
+| Field | Meaning |
+|---|---|
+| `kind` | `skill` (wanted) or `alert` (a warning word, such as `stage` for a senior role) |
+| `points_present` | points when found; negative only for alerts |
+| `points_absent` | points when missing, 0 or negative (skills only) |
+
+`POST /v1/grids/suggest` builds a starting grid from skills ranked 1 to 5,
+as RecruteHub's offers rank them:
+
+| Priority | Present | Missing |
+|---|---|---|
+| 1 core | +1 | -20 |
+| 2 important | +0.5 | 0 |
+| 3 secondary | +0.1 | 0 |
+| 4 CV only | +0.5 | 0 |
+| 5 bonus | +0.1 | 0 |
+| warning word | -5 | 0 |
+
+### The scores
+
+All three are out of 100.
+
+- **auto** = max(0, gained / possible × 100 − min(`penalty_cap`, penalties)).
+  `possible` is the sum of the positive points of the grid, `gained` the
+  part found, `penalties` what missing skills and present alerts cost.
+  `penalty_cap` is 50 by default. A grid with only alerts starts from 100.
+- **manual** = min(highlight points, `manual_cap`) / `manual_cap` × 100, so
+  20 points (the default cap) make 100. Null until someone highlights.
+- **final** = `auto_weight` × auto + (1 − `auto_weight`) × manual, 0.6 by
+  default; the automatic score alone until someone highlights.
+
+Every analysis keeps which criteria were found, on which lines, through
+which words, and what each one gained or cost. The scores rank candidates;
+they never reject anyone on their own. That decision stays with a person
+(GDPR, article 22).
+
+## API
+
+Every `/v1` route takes `Authorization: Bearer <API key>`. Each key belongs
+to a client, and a client only ever sees its own CVs and grids. Errors look
+like `{"error": {"code": "not_found", "message": "..."}}`.
+
+| Route | What it does |
+|---|---|
+| `POST /v1/documents` | upload a PDF (form fields `file`, `external_ref`, `grid_ref`); 202 |
+| `GET /v1/documents` | list, filtered by `external_ref`, `grid_ref`, `status` |
+| `GET /v1/documents/{id}` | status, full text and lines with sections, offsets and boxes |
+| `GET /v1/documents/{id}/file` | the PDF |
+| `DELETE /v1/documents/{id}` | erase the PDF, text, scores and highlights |
+| `POST /v1/grids/suggest` | a starting grid from prioritised skills and warning words (not saved) |
+| `PUT /v1/grids/{ref}` | save a new grid version; rescores that grid's CVs |
+| `GET /v1/grids/{ref}` | the latest version |
+| `GET /v1/grids/{ref}/ranking` | that grid's CVs, best final score first, with missing core skills |
+| `POST /v1/documents/{id}/analyses` | score now (`grid_ref`, `analyzer`) |
+| `GET /v1/documents/{id}/analyses` | every score the CV got, across grid versions and analyzers |
+| `POST /v1/documents/{id}/highlights` | highlight a passage: `start` and `end` in the text, or a `line`; `points` 1 to 5, `author_ref`, `comment` |
+| `GET /v1/documents/{id}/highlights` | the passages highlighted for a grid |
+| `DELETE /v1/highlights/{id}` | remove one |
+| `GET /v1/documents/{id}/score` | auto, manual and final scores, with every point explained |
+| `GET /v1/analyzers` | the analyzers and their versions |
+
+### Webhooks
+
+Set `WEBHOOKS=client:url` and the engine POSTs `{"event": ..., "data": ...}`
+to that URL:
+
+- `document.processed`: `document_id`, `external_ref`, `status`
+- `analysis.done`: `document_id`, `external_ref`, `grid_ref`, `grid_version`, `analyzer`, `score`
+
+With `WEBHOOK_SECRET` set, each call carries
+`X-CVA-Signature: sha256=<HMAC-SHA256 of the body>`. Delivery is best
+effort; the state can always be read with GET.
+
+## Plugging it into RecruteHub
+
+RecruteHub runs it like Code Playground: two more containers built from this
+repository, a `cva_db` database in its Postgres and a bucket in its S3.
+
+```yaml
+  cva-api:
+    build: { context: "https://github.com/Jmailachref/cv-analyzer.git", target: api }
+    environment: &cva-env
+      DATABASE_URL: postgresql+psycopg://cva:cva@postgres:5432/cva_db
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_NAME: cva:jobs
+      API_KEYS: recrutehub:${CVA_API_KEY:-recrutehub-dev-key}
+      WEBHOOKS: recrutehub:http://candidates:8000/internal/cv-events
+      STORAGE: s3
+      S3_URL: http://s3:8333
+      S3_ACCESS_KEY: recrutehub
+      S3_SECRET_KEY: recrutehub-dev
+      S3_BUCKET: cv-analyzer
+  cva-worker:
+    build: { context: "https://github.com/Jmailachref/cv-analyzer.git", target: worker }
+    environment: *cva-env
+```
+
+The mapping:
+
+| RecruteHub | CV Analyzer |
+|---|---|
+| offer id | `grid_ref`; the offer's skills and priorities go through `/v1/grids/suggest`, then `PUT /v1/grids/{offer id}` |
+| candidate id | `external_ref`; the apply page sends the PDF to `POST /v1/documents` and keeps the returned id |
+| recruiter user id | `author_ref` on highlights |
+| candidate list | `GET /v1/grids/{offer id}/ranking` |
+
+## Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | `postgresql+psycopg://cva:cva@localhost:5432/cva` | Postgres |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis |
+| `QUEUE_NAME` | `cva:jobs` | the Redis list jobs go through |
+| `API_KEYS` | `dev:dev-key` | `client:key,client:key` |
+| `WEBHOOKS` | empty | `client:url,client:url` |
+| `WEBHOOK_SECRET` | empty | signs webhook bodies |
+| `STORAGE` | `local` | `s3` or `local` |
+| `STORAGE_DIR` | `data/files` | folder for `local` |
+| `S3_URL`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET` | bucket `cv-analyzer` | for `s3` |
+| `MAX_PDF_MB` | `10` | largest PDF accepted |
+| `OCR_LANGUAGES` | `fra+eng` | Tesseract languages |
+
+## Tests
+
+They need Postgres and Redis (the compose services, or any) and, for the OCR
+test, Tesseract (`apt install tesseract-ocr tesseract-ocr-fra`).
+
+```sh
+pip install -r requirements-dev.txt
+TEST_DATABASE_URL=postgresql+psycopg://cva:cva@localhost:5432/cva_test python -m pytest -q
+```
+
+## Adding an analyzer
+
+An analyzer takes the CV's lines, a grid's criteria and settings, and returns
+a score out of 100 with its details (`analysis/analyzers.py`). Register it in
+`ANALYZERS` and it is available through `POST /v1/documents/{id}/analyses`
+with `"analyzer": "<name>"`, beside the keyword one, so the two can be
+compared on the same CVs before switching. Planned: `embeddings` (a local
+NLP model that also recognises skills the synonym list does not know) and,
+later, `llm`.
+
+## Layout
+
+```
+api/          FastAPI app: routes, schemas, API keys
+core/         settings, database, models, queue, PDF storage, webhooks
+analysis/     PDF extraction and OCR, text matching, synonyms, analyzers, final score
+worker/       the queue worker
+migrations/   Alembic
+tests/
+```
