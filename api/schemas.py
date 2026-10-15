@@ -44,6 +44,9 @@ class OfferIn(BaseModel):
     criteria: list[Criterion] | None = Field(
         default=None, max_length=100, description="The grid, edited by a recruiter; built from skills when left out"
     )
+    rebuild: bool = Field(
+        default=False, description="Without criteria: build the grid from the skills again, dropping a recruiter's edits"
+    )
 
     @model_validator(mode="after")
     def coherent(self) -> OfferIn:
@@ -52,6 +55,8 @@ class OfferIn(BaseModel):
             raise ValueError("each skill appears once in an offer")
         if self.criteria is not None:
             check_distinct(self.criteria)
+            if self.rebuild:
+                raise ValueError("send criteria or rebuild, not both")
         return self
 
 

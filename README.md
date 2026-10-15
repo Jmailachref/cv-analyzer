@@ -93,7 +93,9 @@ RecruteHub's `language`). Only a missing core skill costs points:
 | 5 bonus | +0.1 | 0 |
 
 A recruiter can then edit that grid (other words, other points) and send it
-back as `criteria` in the same PUT; the grid is then taken as given. Each
+back as `criteria` in the same PUT; the grid is then taken as given. A later
+PUT without `criteria` (the skills changed) keeps the criteria a recruiter
+edited or added and rebuilds the others; `"rebuild": true` drops the edits. Each
 change to the grid adds a version; changing only the title does not. Old
 scores keep the version they used.
 

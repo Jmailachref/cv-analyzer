@@ -33,6 +33,26 @@ def grid_from(skills: list[dict]) -> list[dict]:
     return criteria
 
 
+def regrid(old_skills: list[dict], old_criteria: list[dict], skills: list[dict]) -> list[dict]:
+    """The grid built from new skills, keeping what a recruiter changed in the old grid.
+
+    A criterion the recruiter edited keeps its edits while its skill stays in the offer,
+    and one the recruiter added stays. The others follow the new skills and priorities.
+    """
+    defaults = {c["id"]: c for c in grid_from(old_skills)}
+    criteria = grid_from(skills)
+    position = {c["id"]: i for i, c in enumerate(criteria)}
+    for old in old_criteria:
+        default = defaults.get(old["id"])
+        if default is None:
+            if old["id"] not in position:
+                position[old["id"]] = len(criteria)
+                criteria.append(old)
+        elif old != default and old["id"] in position:
+            criteria[position[old["id"]]] = old
+    return criteria
+
+
 def total_points(auto: float | None, highlights: list[int]) -> float | None:
     """The CV's points: the keyword points plus every recruiter's points. No bound."""
     if auto is None:

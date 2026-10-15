@@ -60,6 +60,24 @@ def test_an_offer_gets_a_grid_built_from_its_skills(client):
     ]
 
 
+def test_changing_skills_keeps_the_grid_a_recruiter_edited(client):
+    grid = create_offer(client)["criteria"]
+    grid[0]["terms"] = ["pandas"]
+    grid.append({"id": "airflow", "label": "Airflow", "points_present": 3})
+    create_offer(client, body={**OFFER, "criteria": grid})
+    skills = [{"name": "Python", "priority": 2}, {"name": "SQL", "priority": 1}, {"name": "Go", "priority": 3}]
+    out = create_offer(client, body={"title": "Data scientist", "skills": skills})
+    by_id = {c["id"]: c for c in out["criteria"]}
+    # Python was edited: it keeps its edits. SQL follows its new priority, Docker is gone, Airflow stays.
+    assert by_id["python"]["terms"] == ["pandas"] and by_id["python"]["points_absent"] == -20
+    assert (by_id["sql"]["points_present"], by_id["sql"]["points_absent"]) == (1.0, -20.0)
+    assert "docker" not in by_id and by_id["go"]["points_present"] == 0.1
+    assert by_id["airflow"]["points_present"] == 3
+    rebuilt = create_offer(client, body={"title": "Data scientist", "skills": skills, "rebuild": True})
+    assert [c["id"] for c in rebuilt["criteria"]] == ["sql", "python", "go"]
+    assert rebuilt["criteria"][1]["terms"] == []
+
+
 def test_offer_validation(client):
     costs_when_found = {"title": "x", "criteria": [{"id": "stage", "label": "stage", "points_present": -5}]}
     assert client.put("/v1/offers/offer-1", json=costs_when_found, headers=RH).status_code == 400

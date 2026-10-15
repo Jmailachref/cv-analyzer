@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from analysis.analyzers import ANALYZERS, DEFAULT_ANALYZER
-from analysis.scoring import grid_from, total_points
+from analysis.scoring import grid_from, regrid, total_points
 from analysis.text import locate, normalize
 from api import schemas
 from api.auth import client_id
@@ -321,7 +321,8 @@ def list_offers(db: Db, client: Client) -> list[schemas.OfferSummary]:
 def save_offer(ref: str, body: schemas.OfferIn, db: Db, client: Client) -> schemas.OfferOut:
     """Creates or updates the offer ref (RecruteHub: the job offer's id).
 
-    Without criteria, the grid is built from the skills and their priorities. When the grid
+    Without criteria, the grid is built from the skills and their priorities, keeping the
+    criteria a recruiter edited or added (send criteria to replace the grid). When the grid
     changes it gets a new version and every CV read for the offer is scored again.
     """
     if len(ref) > 200:
@@ -331,10 +332,16 @@ def save_offer(ref: str, body: schemas.OfferIn, db: Db, client: Client) -> schem
     if offer is None:
         offer = Offer(client_id=client, external_ref=ref)
         db.add(offer)
+    old_skills = offer.skills or []
     offer.title, offer.skills = data["title"], data["skills"]
-    criteria = data["criteria"] if body.criteria is not None else grid_from(data["skills"])
     db.flush()
     grid = latest_grid(db, offer.id)
+    if body.criteria is not None:
+        criteria = data["criteria"]
+    elif grid is None or body.rebuild:
+        criteria = grid_from(data["skills"])
+    else:
+        criteria = regrid(old_skills, grid.criteria, data["skills"])
     changed = grid is None or grid.criteria != criteria
     if changed:
         grid = Grid(offer=offer, version=grid.version + 1 if grid else 1, criteria=criteria, settings={})
