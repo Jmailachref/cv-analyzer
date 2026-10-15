@@ -13,21 +13,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from analysis.analyzers import ANALYZERS, DEFAULT_ANALYZER
-from analysis.scoring import ALERT_POINTS, PRIORITY_POINTS, final_score, manual_score
-from analysis.text import normalize
+from analysis.scoring import final_score, grid_from, manual_score
 from api import schemas
 from api.auth import client_id
 from core import storage
 from core.config import settings
 from core.db import get_session
-from core.models import Analysis, Document, Grid, Highlight
+from core.models import Analysis, Document, Grid, Highlight, Offer
 from core.queue import enqueue
 from worker.main import analyze, latest_grid
 
 app = FastAPI(
     title="CV Analyzer API",
     version="0.1.0",
-    description="Reads CVs (PDF, scanned or not), scores them against a grid of keywords, "
+    description="Reads CVs (PDF, scanned or not), scores each against the offer it was sent for, "
     "and keeps the passages recruiters highlight.",
 )
 
@@ -68,25 +67,22 @@ def own_document(db: Session, client: str, document_id: uuid.UUID) -> Document:
     return document
 
 
-def own_grid(db: Session, client: str, ref: str) -> Grid:
-    grid = latest_grid(db, client, ref)
-    if grid is None:
-        raise api_error(404, "grid_not_found", f"no grid for {ref!r}")
-    return grid
+def find_offer(db: Session, client: str, ref: str) -> Offer | None:
+    return db.scalar(select(Offer).where(Offer.client_id == client, Offer.external_ref == ref))
 
 
-def grid_ref_of(document: Document, given: str | None) -> str:
-    ref = given or document.grid_ref
-    if not ref:
-        raise api_error(400, "grid_ref_required", "this document has no grid_ref; pass one")
-    return ref
+def own_offer(db: Session, client: str, ref: str) -> Offer:
+    offer = find_offer(db, client, ref)
+    if offer is None:
+        raise api_error(404, "offer_not_found", f"no offer {ref!r}; create it with PUT /v1/offers/{ref}")
+    return offer
 
 
 def document_out(d: Document) -> schemas.DocumentOut:
     return schemas.DocumentOut(
         id=d.id,
+        offer_ref=d.offer.external_ref,
         external_ref=d.external_ref,
-        grid_ref=d.grid_ref,
         filename=d.filename,
         size=d.size,
         status=d.status,
@@ -98,9 +94,17 @@ def document_out(d: Document) -> schemas.DocumentOut:
     )
 
 
-def grid_out(g: Grid) -> schemas.GridOut:
-    return schemas.GridOut(
-        external_ref=g.external_ref, version=g.version, criteria=g.criteria, settings=g.settings, created_at=g.created_at
+def offer_out(o: Offer, g: Grid) -> schemas.OfferOut:
+    return schemas.OfferOut(
+        external_ref=o.external_ref,
+        title=o.title,
+        skills=o.skills,
+        alerts=o.alerts,
+        grid_version=g.version,
+        criteria=g.criteria,
+        settings=g.settings,
+        created_at=o.created_at,
+        updated_at=o.updated_at,
     )
 
 
@@ -108,7 +112,7 @@ def analysis_out(a: Analysis, g: Grid) -> schemas.AnalysisOut:
     return schemas.AnalysisOut(
         id=a.id,
         document_id=a.document_id,
-        grid_ref=g.external_ref,
+        offer_ref=g.offer.external_ref,
         grid_version=g.version,
         analyzer=a.analyzer,
         analyzer_version=a.analyzer_version,
@@ -122,7 +126,6 @@ def highlight_out(h: Highlight) -> schemas.HighlightOut:
     return schemas.HighlightOut(
         id=h.id,
         document_id=h.document_id,
-        grid_ref=h.grid_ref,
         author_ref=h.author_ref,
         start=h.start,
         end=h.end,
@@ -143,11 +146,11 @@ def latest_analyses(db: Session, grid: Grid, document_ids: list[uuid.UUID]) -> d
     return {a.document_id: a for a in rows}
 
 
-def highlights_of(db: Session, ref: str, document_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[Highlight]]:
+def highlights_of(db: Session, document_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[Highlight]]:
     out: dict[uuid.UUID, list[Highlight]] = {}
     rows = db.scalars(
         select(Highlight)
-        .where(Highlight.grid_ref == ref, Highlight.document_id.in_(document_ids))
+        .where(Highlight.document_id.in_(document_ids))
         .order_by(Highlight.start, Highlight.created_at)
     )
     for h in rows:
@@ -176,10 +179,14 @@ async def upload_document(
     db: Db,
     client: Client,
     file: Annotated[UploadFile, File(description="The CV, a PDF")],
+    offer_ref: Annotated[str, Form(min_length=1, max_length=200, description="The offer this CV applies to")],
     external_ref: Annotated[str | None, Form(max_length=200, description="Your id for this CV")] = None,
-    grid_ref: Annotated[str | None, Form(max_length=200, description="Score with this grid once read")] = None,
 ) -> schemas.DocumentOut:
-    """Stores a CV and queues it to be read. Poll GET /v1/documents/{id} or wait for the webhook."""
+    """Stores a CV sent for an offer and queues it to be read, then scored against that offer.
+
+    Poll GET /v1/documents/{id} or wait for the webhooks.
+    """
+    offer = own_offer(db, client, offer_ref)
     data = await file.read(settings.max_pdf_bytes + 1)
     if len(data) > settings.max_pdf_bytes:
         raise api_error(413, "file_too_large", f"the PDF must be {settings.max_pdf_bytes // (1024 * 1024)} MB or less")
@@ -188,8 +195,8 @@ async def upload_document(
     document = Document(
         id=uuid.uuid4(),
         client_id=client,
+        offer=offer,
         external_ref=external_ref or None,
-        grid_ref=grid_ref or None,
         filename=(file.filename or "cv.pdf")[:255],
         size=len(data),
         sha256=hashlib.sha256(data).hexdigest(),
@@ -207,16 +214,17 @@ async def upload_document(
 def list_documents(
     db: Db,
     client: Client,
+    offer_ref: str | None = None,
     external_ref: str | None = None,
-    grid_ref: str | None = None,
     status_: Annotated[schemas.DocumentStatus | None, Query(alias="status")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[schemas.DocumentOut]:
     query = select(Document).where(Document.client_id == client).order_by(Document.created_at.desc()).limit(limit)
     if external_ref is not None:
         query = query.where(Document.external_ref == external_ref)
-    if grid_ref is not None:
-        query = query.where(Document.grid_ref == grid_ref)
+    if offer_ref is not None:
+        offer = find_offer(db, client, offer_ref)
+        query = query.where(Document.offer_id == (offer.id if offer else None))
     if status_ is not None:
         query = query.where(Document.status == status_)
     return [document_out(d) for d in db.scalars(query)]
@@ -261,78 +269,65 @@ def delete_document(document_id: uuid.UUID, db: Db, client: Client) -> Response:
     return Response(status_code=204)
 
 
-# --- grids ------------------------------------------------------------------
+# --- offers -----------------------------------------------------------------
 
 
-@app.post("/v1/grids/suggest", response_model=schemas.GridIn, tags=["grids"])
-def suggest_grid(body: schemas.SuggestIn, _: Client) -> schemas.GridIn:
-    """A starting grid from skills ranked by priority, plus warning words. Nothing is saved.
+@app.put("/v1/offers/{ref}", response_model=schemas.OfferOut, tags=["offers"])
+def save_offer(ref: str, body: schemas.OfferIn, db: Db, client: Client) -> schemas.OfferOut:
+    """Creates or updates the offer ref (RecruteHub: the job offer's id).
 
-    Priority 1 (core): +1 when present, -20 when missing. 2: +0.5. 3: +0.1.
-    4 (CV only): +0.5. 5 (bonus): +0.1. Each warning word: -5 when present.
+    Without criteria, the grid is built from the skills and their priorities. When the grid
+    changes it gets a new version and every CV read for the offer is scored again.
     """
-    criteria, used = [], set()
-
-    def slug(name: str) -> str:
-        base = "-".join(normalize(name).split())[:50] or "criterion"
-        base = base if base[0].isalnum() else f"c{base}"
-        out, i = base, 2
-        while out in used:
-            out, i = f"{base}-{i}", i + 1
-        used.add(out)
-        return out
-
-    for skill in sorted(body.skills, key=lambda s: s.priority):
-        present, absent = PRIORITY_POINTS[skill.priority]
-        criteria.append(
-            schemas.Criterion(id=slug(skill.name), label=skill.name, points_present=present, points_absent=absent)
-        )
-    for word in body.alerts:
-        criteria.append(
-            schemas.Criterion(
-                id=slug(word), label=word, kind="alert", default_synonyms=False, points_present=ALERT_POINTS
-            )
-        )
-    return schemas.GridIn(criteria=criteria)
-
-
-@app.put("/v1/grids/{ref}", response_model=schemas.GridOut, tags=["grids"])
-def save_grid(ref: str, body: schemas.GridIn, db: Db, client: Client) -> schemas.GridOut:
-    """Saves a new version of the grid for ref (RecruteHub: an offer) and rescores its CVs."""
     if len(ref) > 200:
         raise api_error(400, "invalid_request", "ref is longer than 200 characters")
-    previous = latest_grid(db, client, ref)
     data = body.model_dump()
-    grid = Grid(
-        client_id=client,
-        external_ref=ref,
-        version=(previous.version + 1) if previous else 1,
-        criteria=data["criteria"],
-        settings=data["settings"],
-    )
-    db.add(grid)
+    offer = find_offer(db, client, ref)
+    if offer is None:
+        offer = Offer(client_id=client, external_ref=ref)
+        db.add(offer)
+    offer.title, offer.skills, offer.alerts = data["title"], data["skills"], data["alerts"]
+    criteria = data["criteria"] if body.criteria is not None else grid_from(data["skills"], data["alerts"])
+    db.flush()
+    grid = latest_grid(db, offer.id)
+    changed = grid is None or (grid.criteria, grid.settings) != (criteria, data["settings"])
+    if changed:
+        grid = Grid(offer=offer, version=grid.version + 1 if grid else 1, criteria=criteria, settings=data["settings"])
+        db.add(grid)
     db.commit()
-    db.refresh(grid)
-    ready = db.scalars(
-        select(Document.id).where(Document.client_id == client, Document.grid_ref == ref, Document.status == "ready")
-    )
-    for document_id in ready:
-        enqueue("analyze", document_id=document_id, grid_id=grid.id)
-    return grid_out(grid)
+    db.refresh(offer)
+    if changed:
+        ready = db.scalars(select(Document.id).where(Document.offer_id == offer.id, Document.status == "ready"))
+        for document_id in ready:
+            enqueue("analyze", document_id=document_id, grid_id=grid.id)
+    return offer_out(offer, grid)
 
 
-@app.get("/v1/grids/{ref}", response_model=schemas.GridOut, tags=["grids"])
-def read_grid(ref: str, db: Db, client: Client) -> schemas.GridOut:
-    return grid_out(own_grid(db, client, ref))
+@app.get("/v1/offers/{ref}", response_model=schemas.OfferOut, tags=["offers"])
+def read_offer(ref: str, db: Db, client: Client) -> schemas.OfferOut:
+    offer = own_offer(db, client, ref)
+    return offer_out(offer, latest_grid(db, offer.id))
 
 
-@app.get("/v1/grids/{ref}/ranking", response_model=list[schemas.RankingRow], tags=["grids"])
+@app.delete("/v1/offers/{ref}", status_code=204, tags=["offers"])
+def delete_offer(ref: str, db: Db, client: Client) -> Response:
+    """Erases the offer and every CV sent for it, with their scores and highlights."""
+    offer = own_offer(db, client, ref)
+    for key in db.scalars(select(Document.storage_key).where(Document.offer_id == offer.id)):
+        storage.delete(key)
+    db.delete(offer)
+    db.commit()
+    return Response(status_code=204)
+
+
+@app.get("/v1/offers/{ref}/ranking", response_model=list[schemas.RankingRow], tags=["offers"])
 def ranking(ref: str, db: Db, client: Client) -> list[schemas.RankingRow]:
-    """Every CV sent with this grid_ref, best final score first; CVs not scored yet come last."""
-    grid = own_grid(db, client, ref)
-    documents = list(db.scalars(select(Document).where(Document.client_id == client, Document.grid_ref == ref)))
+    """Every CV sent for this offer, best final score first; CVs not scored yet come last."""
+    offer = own_offer(db, client, ref)
+    grid = latest_grid(db, offer.id)
+    documents = list(db.scalars(select(Document).where(Document.offer_id == offer.id)))
     ids = [d.id for d in documents]
-    analyses, highlights = latest_analyses(db, grid, ids), highlights_of(db, ref, ids)
+    analyses, highlights = latest_analyses(db, grid, ids), highlights_of(db, ids)
     rows = []
     for d in documents:
         a = analyses.get(d.id)
@@ -370,14 +365,14 @@ def ranking(ref: str, db: Db, client: Client) -> list[schemas.RankingRow]:
 def analyze_document(
     document_id: uuid.UUID, db: Db, client: Client, body: schemas.AnalyzeIn | None = None
 ) -> schemas.AnalysisOut:
-    """Scores a read CV now with the latest version of a grid."""
+    """Scores a read CV now against the latest grid of its offer, e.g. with another analyzer."""
     body = body or schemas.AnalyzeIn()
     d = own_document(db, client, document_id)
     if d.status != "ready":
         raise api_error(409, "not_ready", f"the document is {d.status}, not ready")
     if body.analyzer not in ANALYZERS:
         raise api_error(400, "unknown_analyzer", f"analyzers: {', '.join(ANALYZERS)}")
-    grid = own_grid(db, client, grid_ref_of(d, body.grid_ref))
+    grid = latest_grid(db, d.offer_id)
     return analysis_out(analyze(db, d, grid, body.analyzer), grid)
 
 
@@ -419,7 +414,6 @@ def add_highlight(document_id: uuid.UUID, body: schemas.HighlightIn, db: Db, cli
         raise api_error(400, "invalid_range", "the passage is empty")
     h = Highlight(
         document_id=d.id,
-        grid_ref=grid_ref_of(d, body.grid_ref),
         author_ref=body.author_ref,
         start=start,
         end=end,
@@ -434,11 +428,9 @@ def add_highlight(document_id: uuid.UUID, body: schemas.HighlightIn, db: Db, cli
 
 
 @app.get("/v1/documents/{document_id}/highlights", response_model=list[schemas.HighlightOut], tags=["highlights"])
-def list_highlights(
-    document_id: uuid.UUID, db: Db, client: Client, grid_ref: str | None = None
-) -> list[schemas.HighlightOut]:
+def list_highlights(document_id: uuid.UUID, db: Db, client: Client) -> list[schemas.HighlightOut]:
     d = own_document(db, client, document_id)
-    return [highlight_out(h) for h in highlights_of(db, grid_ref_of(d, grid_ref), [d.id]).get(d.id, [])]
+    return [highlight_out(h) for h in highlights_of(db, [d.id]).get(d.id, [])]
 
 
 @app.delete("/v1/highlights/{highlight_id}", status_code=204, tags=["highlights"])
@@ -455,19 +447,18 @@ def delete_highlight(highlight_id: uuid.UUID, db: Db, client: Client) -> Respons
 
 
 @app.get("/v1/documents/{document_id}/score", response_model=schemas.ScoreOut, tags=["scores"])
-def document_score(document_id: uuid.UUID, db: Db, client: Client, grid_ref: str | None = None) -> schemas.ScoreOut:
-    """The automatic, manual and final scores for one CV, with every point explained."""
+def document_score(document_id: uuid.UUID, db: Db, client: Client) -> schemas.ScoreOut:
+    """The automatic, manual and final scores of one CV for its offer, with every point explained."""
     d = own_document(db, client, document_id)
-    ref = grid_ref_of(d, grid_ref)
-    grid = own_grid(db, client, ref)
+    grid = latest_grid(db, d.offer_id)
     a = latest_analyses(db, grid, [d.id]).get(d.id)
-    marks = highlights_of(db, ref, [d.id]).get(d.id, [])
+    marks = highlights_of(db, [d.id]).get(d.id, [])
     auto = a.score if a else None
     manual = manual_score([h.points for h in marks], grid.settings)
     return schemas.ScoreOut(
         document_id=d.id,
+        offer_ref=d.offer.external_ref,
         external_ref=d.external_ref,
-        grid_ref=ref,
         grid_version=grid.version if a else None,
         auto=auto,
         manual=manual,

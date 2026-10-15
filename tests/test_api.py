@@ -21,14 +21,22 @@ CV_WEAK = make_pdf(
 )
 
 
-def upload(client, pdf=CV_GOOD, headers=RH, **form):
+# An offer as RecruteHub sends it: its skills use "language".
+OFFER = {
+    "title": "Data scientist",
+    "skills": [{"language": "Python", "priority": 1}, {"language": "SQL", "priority": 2}, {"language": "Docker", "priority": 3}],
+    "alerts": ["stage"],
+}
+
+
+def upload(client, pdf=CV_GOOD, headers=RH, offer_ref="offer-1", **form):
+    if offer_ref is not None:
+        form["offer_ref"] = offer_ref
     return client.post("/v1/documents", files={"file": ("cv.pdf", pdf, "application/pdf")}, data=form, headers=headers)
 
 
-def suggest(client):
-    body = {"skills": [{"name": "Python", "priority": 1}, {"name": "SQL", "priority": 2}, {"name": "Docker", "priority": 3}],
-            "alerts": ["stage"]}
-    r = client.post("/v1/grids/suggest", json=body, headers=RH)
+def create_offer(client, ref="offer-1", body=OFFER):
+    r = client.put(f"/v1/offers/{ref}", json=body, headers=RH)
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -39,8 +47,10 @@ def test_every_route_needs_an_api_key(client):
     assert client.get("/health").json() == {"status": "ok"}
 
 
-def test_suggest_builds_a_grid_from_priorities(client):
-    grid = suggest(client)
+def test_an_offer_gets_a_grid_built_from_its_skills(client):
+    grid = create_offer(client)
+    assert (grid["external_ref"], grid["title"], grid["grid_version"]) == ("offer-1", "Data scientist", 1)
+    assert grid["skills"][0] == {"name": "Python", "priority": 1}
     assert [(c["id"], c["kind"], c["points_present"], c["points_absent"]) for c in grid["criteria"]] == [
         ("python", "skill", 1.0, -20.0),
         ("sql", "skill", 0.5, 0.0),
@@ -50,24 +60,31 @@ def test_suggest_builds_a_grid_from_priorities(client):
     assert grid["settings"] == {"penalty_cap": 50, "auto_weight": 0.6, "manual_cap": 20}
 
 
-def test_grid_validation(client):
-    bad_alert = {"criteria": [{"id": "stage", "label": "stage", "kind": "alert", "points_present": 2}]}
-    assert client.put("/v1/grids/offer-1", json=bad_alert, headers=RH).status_code == 400
-    twice = {"criteria": [{"id": "python", "label": "Python"}, {"id": "python", "label": "Py"}]}
-    assert client.put("/v1/grids/offer-1", json=twice, headers=RH).status_code == 400
-    assert client.get("/v1/grids/offer-1", headers=RH).json()["error"]["code"] == "grid_not_found"
+def test_offer_validation(client):
+    bad_alert = {"title": "x", "criteria": [{"id": "stage", "label": "stage", "kind": "alert", "points_present": 2}]}
+    assert client.put("/v1/offers/offer-1", json=bad_alert, headers=RH).status_code == 400
+    twice = {"title": "x", "criteria": [{"id": "python", "label": "Python"}, {"id": "python", "label": "Py"}]}
+    assert client.put("/v1/offers/offer-1", json=twice, headers=RH).status_code == 400
+    same_skill = {"title": "x", "skills": [{"name": "Python", "priority": 1}, {"name": "python", "priority": 2}]}
+    assert client.put("/v1/offers/offer-1", json=same_skill, headers=RH).status_code == 400
+    assert client.put("/v1/offers/offer-1", json={"skills": []}, headers=RH).status_code == 400
+    assert client.get("/v1/offers/offer-1", headers=RH).json()["error"]["code"] == "offer_not_found"
 
 
-def test_upload_only_takes_pdfs(client):
+def test_a_cv_is_always_sent_for_an_existing_offer(client):
+    assert upload(client, offer_ref=None).status_code == 400
+    r = upload(client, offer_ref="offer-404")
+    assert r.status_code == 404 and r.json()["error"]["code"] == "offer_not_found"
+    create_offer(client)
     r = upload(client, pdf=b"hello")
     assert r.status_code == 415 and r.json()["error"]["code"] == "not_a_pdf"
+    assert upload(client).json()["offer_ref"] == "offer-1"
 
 
 def test_upload_read_and_score(client, events):
-    grid = client.put("/v1/grids/offer-1", json=suggest(client), headers=RH).json()
-    assert grid["version"] == 1
+    create_offer(client)
 
-    r = upload(client, external_ref="cand-1", grid_ref="offer-1")
+    r = upload(client, external_ref="cand-1")
     assert r.status_code == 202, r.text
     doc = r.json()
     assert doc["status"] == "queued" and doc["external_ref"] == "cand-1"
@@ -84,12 +101,14 @@ def test_upload_read_and_score(client, events):
     assert found == {"python": [3], "sql": [3], "docker": [5]}
 
     assert [e[1] for e in events] == ["document.processed", "analysis.done"]
+    assert events[0][2]["offer_ref"] == "offer-1"
     assert events[1][0] == "recrutehub" and events[1][2]["external_ref"] == "cand-1" and events[1][2]["score"] == 100
+    assert events[1][2]["offer_ref"] == "offer-1" and events[1][2]["grid_version"] == 1
 
 
 def test_highlights_add_a_manual_score(client):
-    client.put("/v1/grids/offer-1", json=suggest(client), headers=RH)
-    doc = upload(client, external_ref="cand-1", grid_ref="offer-1").json()
+    create_offer(client)
+    doc = upload(client, external_ref="cand-1").json()
     drain()
     text = client.get(f"/v1/documents/{doc['id']}", headers=RH).json()["text"]
     start = text.index("Data scientist")
@@ -116,7 +135,8 @@ def test_highlights_add_a_manual_score(client):
 
 
 def test_highlight_validation(client):
-    doc = upload(client, grid_ref="offer-1").json()
+    create_offer(client)
+    doc = upload(client).json()
     early = client.post(f"/v1/documents/{doc['id']}/highlights", json={"author_ref": "u", "line": 0, "points": 3}, headers=RH)
     assert early.status_code == 409
     drain()
@@ -128,21 +148,26 @@ def test_highlight_validation(client):
 
 
 def test_ranking_and_rescoring_when_the_grid_changes(client):
-    client.put("/v1/grids/offer-1", json=suggest(client), headers=RH)
-    good = upload(client, external_ref="good", grid_ref="offer-1").json()
-    weak = upload(client, pdf=CV_WEAK, external_ref="weak", grid_ref="offer-1").json()
-    pending = upload(client, external_ref="pending", grid_ref="offer-1").json()
+    create_offer(client)
+    good = upload(client, external_ref="good").json()
+    weak = upload(client, pdf=CV_WEAK, external_ref="weak").json()
+    pending = upload(client, external_ref="pending").json()
     assert drain() == 3
     client.delete(f"/v1/documents/{pending['id']}", headers=RH)
 
-    ranking = client.get("/v1/grids/offer-1/ranking", headers=RH).json()
+    ranking = client.get("/v1/offers/offer-1/ranking", headers=RH).json()
     assert [(r["rank"], r["external_ref"], r["final"]) for r in ranking] == [(1, "good", 100.0), (2, "weak", 0.0)]
     # Weak: no Python (-20), a "stage" (-5), nothing gained.
     assert ranking[1]["missing"] == ["Python"]
 
-    grid = suggest(client)
-    grid["criteria"].append({"id": "php", "label": "PHP", "points_present": 1})
-    assert client.put("/v1/grids/offer-1", json=grid, headers=RH).json()["version"] == 2
+    # A new title alone leaves the grid, and the scores, as they are.
+    assert create_offer(client, body={**OFFER, "title": "Data scientist senior"})["grid_version"] == 1
+    assert drain() == 0
+
+    # A recruiter edits the grid: a new version, and every read CV is scored again.
+    edited = create_offer(client)
+    edited["criteria"].append({"id": "php", "label": "PHP", "points_present": 1})
+    assert create_offer(client, body={**OFFER, "criteria": edited["criteria"]})["grid_version"] == 2
     assert drain() == 2
     weak_score = client.get(f"/v1/documents/{weak['id']}/score", headers=RH).json()
     assert weak_score["grid_version"] == 2
@@ -153,32 +178,34 @@ def test_ranking_and_rescoring_when_the_grid_changes(client):
 
 
 def test_analyze_on_demand(client):
+    create_offer(client)
     doc = upload(client).json()
-    drain()
     url = f"/v1/documents/{doc['id']}/analyses"
-    assert client.post(url, json={}, headers=RH).json()["error"]["code"] == "grid_ref_required"
-    assert client.post(url, json={"grid_ref": "offer-9"}, headers=RH).json()["error"]["code"] == "grid_not_found"
-    client.put("/v1/grids/offer-9", json=suggest(client), headers=RH)
-    assert client.post(url, json={"grid_ref": "offer-9", "analyzer": "magic"}, headers=RH).status_code == 400
-    r = client.post(url, json={"grid_ref": "offer-9"}, headers=RH)
+    assert client.post(url, json={}, headers=RH).status_code == 409
+    drain()
+    assert client.post(url, json={"analyzer": "magic"}, headers=RH).status_code == 400
+    r = client.post(url, json={}, headers=RH)
     assert r.status_code == 201 and r.json()["score"] == 100 and r.json()["analyzer"] == "keywords"
+    assert r.json()["offer_ref"] == "offer-1"
 
 
 def test_clients_only_see_their_own_data(client):
-    client.put("/v1/grids/offer-1", json=suggest(client), headers=RH)
-    doc = upload(client, grid_ref="offer-1").json()
+    create_offer(client)
+    doc = upload(client).json()
     drain()
     assert client.get(f"/v1/documents/{doc['id']}", headers=OTHER).status_code == 404
     assert client.get(f"/v1/documents/{doc['id']}/file", headers=OTHER).status_code == 404
     assert client.delete(f"/v1/documents/{doc['id']}", headers=OTHER).status_code == 404
-    assert client.get("/v1/grids/offer-1", headers=OTHER).status_code == 404
+    assert client.get("/v1/offers/offer-1", headers=OTHER).status_code == 404
+    assert upload(client, headers=OTHER).status_code == 404
     assert client.get("/v1/documents", headers=OTHER).json() == []
-    assert len(client.get("/v1/documents?grid_ref=offer-1", headers=RH).json()) == 1
+    assert len(client.get("/v1/documents?offer_ref=offer-1", headers=RH).json()) == 1
+    assert client.get("/v1/documents?offer_ref=offer-2", headers=RH).json() == []
 
 
 def test_delete_erases_everything(client):
-    client.put("/v1/grids/offer-1", json=suggest(client), headers=RH)
-    doc = upload(client, grid_ref="offer-1").json()
+    create_offer(client)
+    doc = upload(client).json()
     drain()
     client.post(f"/v1/documents/{doc['id']}/highlights", json={"author_ref": "u", "line": 0, "points": 3}, headers=RH)
     stored = Path(settings.storage_dir) / "recrutehub" / f"{doc['id']}.pdf"
@@ -186,10 +213,25 @@ def test_delete_erases_everything(client):
     assert client.delete(f"/v1/documents/{doc['id']}", headers=RH).status_code == 204
     assert not stored.exists()
     assert client.get(f"/v1/documents/{doc['id']}", headers=RH).status_code == 404
-    assert client.get("/v1/grids/offer-1/ranking", headers=RH).json() == []
+    assert client.get("/v1/offers/offer-1/ranking", headers=RH).json() == []
+
+
+def test_deleting_an_offer_erases_its_cvs(client):
+    create_offer(client)
+    create_offer(client, ref="offer-2")
+    doc = upload(client).json()
+    kept = upload(client, offer_ref="offer-2").json()
+    drain()
+    stored = Path(settings.storage_dir) / "recrutehub" / f"{doc['id']}.pdf"
+    assert client.delete("/v1/offers/offer-1", headers=OTHER).status_code == 404
+    assert client.delete("/v1/offers/offer-1", headers=RH).status_code == 204
+    assert not stored.exists()
+    assert client.get(f"/v1/documents/{doc['id']}", headers=RH).status_code == 404
+    assert client.get(f"/v1/documents/{kept['id']}/score", headers=RH).json()["auto"] == 100
 
 
 def test_unreadable_and_broken_pdfs(client, events):
+    create_offer(client)
     blank = upload(client, pdf=make_pdf("")).json()
     broken = upload(client, pdf=b"%PDF-1.7 this is not really a pdf").json()
     drain()

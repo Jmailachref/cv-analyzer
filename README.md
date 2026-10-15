@@ -1,10 +1,13 @@
 # CV Analyzer
 
-Reads CVs (PDF, scanned or not), scores them against a grid of keywords, and
-keeps the passages recruiters highlight, through a REST API other projects
-call. It knows nothing about offers or candidates: callers pass their own
-references (`external_ref` for a CV, `grid_ref` for what it is scored
-against). RecruteHub is the first client.
+Reads CVs (PDF, scanned or not), scores each one against the job offer it
+was sent for, and keeps the passages recruiters highlight, through a REST API
+other projects call. RecruteHub is the first client.
+
+A CV always belongs to an offer: the offer is what it is scored against. The
+caller first saves its offer here (`PUT /v1/offers/{its id}`, with the title
+and the skills ranked 1 to 5, as RecruteHub defines them), then sends CVs for
+it. A CV for an offer the engine does not know is refused.
 
 The design, with the reasoning behind the scoring rules:
 https://claude.ai/code/artifact/9daf60be-c8b5-4f8c-bd7d-babb3532a226
@@ -19,7 +22,10 @@ The API is on http://localhost:8100, its interactive docs on
 http://localhost:8100/docs. The development API key is `dev-key`:
 
 ```sh
-curl -H "Authorization: Bearer dev-key" -F file=@cv.pdf -F external_ref=cand-1 -F grid_ref=offer-1 \
+curl -X PUT -H "Authorization: Bearer dev-key" -H "Content-Type: application/json" \
+  -d '{"title": "Data scientist", "skills": [{"name": "Python", "priority": 1}, {"name": "SQL", "priority": 2}]}' \
+  http://localhost:8100/v1/offers/offer-1
+curl -H "Authorization: Bearer dev-key" -F file=@cv.pdf -F offer_ref=offer-1 -F external_ref=cand-1 \
   http://localhost:8100/v1/documents
 ```
 
@@ -27,31 +33,33 @@ curl -H "Authorization: Bearer dev-key" -F file=@cv.pdf -F external_ref=cand-1 -
 |---|---|
 | api | FastAPI, `/v1` routes |
 | worker | reads PDFs (pdfplumber, Tesseract OCR for scans) and scores them, from a Redis queue |
-| postgres | documents, lines, grids, analyses, highlights |
+| postgres | offers and their grids, documents, lines, analyses, highlights |
 | redis | the job queue |
 | s3, s3-setup | SeaweedFS, S3-compatible storage for the PDFs (bucket `cv-analyzer`) |
 | migrate | runs `alembic upgrade head`, then exits |
 
 ## How a CV is scored
 
-1. **Upload.** `POST /v1/documents` stores the PDF and queues it. It answers
-   at once with the document's id and status `queued`.
-2. **Read.** The worker extracts the text line by line. Each line gets its
+1. **Offer.** `PUT /v1/offers/{ref}` saves the offer and builds its grid
+   from the skills and their priorities (below).
+2. **Upload.** `POST /v1/documents` takes the PDF and the `offer_ref` it is
+   sent for, stores it and queues it. It answers at once with the
+   document's id and status `queued`.
+3. **Read.** The worker extracts the text line by line. Each line gets its
    page, its section (experience, education, skills, ...) and its position
    in the text; lines read from the PDF also get their box on the page, for
    highlighting. Text the reader cannot see (white, or smaller than 4 pt) is
    dropped. A page with almost no text is read with OCR. The status becomes
    `ready`, `unreadable` (nothing to read, even with OCR) or `failed`.
-3. **Score.** When the document has a `grid_ref` and that grid exists, the
-   worker scores it at once. Saving a new version of a grid rescores every
-   ready CV sent with it.
-4. **Highlight.** A recruiter marks passages worth 1 to 5 points each.
-5. **Read the result.** `GET /v1/documents/{id}/score` or
-   `GET /v1/grids/{ref}/ranking`.
+4. **Score.** The worker scores the CV against its offer's grid at once.
+   When the grid changes, every CV read for the offer is scored again.
+5. **Highlight.** A recruiter marks passages worth 1 to 5 points each.
+6. **Read the result.** `GET /v1/documents/{id}/score` or
+   `GET /v1/offers/{ref}/ranking`.
 
 ### The grid
 
-A grid is a list of criteria. Each criterion is a group of words: its label,
+Each offer has a grid: a list of criteria. Each criterion is a group of words: its label,
 its own `terms`, and the engine's synonyms for the label (`JavaScript` also
 finds `JS`, `Node.js`; `SQL` finds `PostgreSQL`, `MySQL`; see
 `analysis/synonyms.py`). Matching ignores case and accents and takes whole
@@ -64,8 +72,9 @@ however often it appears.
 | `points_present` | points when found; negative only for alerts |
 | `points_absent` | points when missing, 0 or negative (skills only) |
 
-`POST /v1/grids/suggest` builds a starting grid from skills ranked 1 to 5,
-as RecruteHub's offers rank them:
+`PUT /v1/offers/{ref}` builds the grid from the offer's skills ranked 1 to 5,
+as RecruteHub's offers rank them (a skill's `name` can also be sent as
+RecruteHub's `language`), and its warning words (`alerts`):
 
 | Priority | Present | Missing |
 |---|---|---|
@@ -75,6 +84,11 @@ as RecruteHub's offers rank them:
 | 4 CV only | +0.5 | 0 |
 | 5 bonus | +0.1 | 0 |
 | warning word | -5 | 0 |
+
+A recruiter can then edit that grid (other words, other points) and send it
+back as `criteria` in the same PUT; the grid is then taken as given. Each
+change to the grid adds a version; changing only the title does not. Old
+scores keep the version they used.
 
 ### The scores
 
@@ -102,19 +116,19 @@ like `{"error": {"code": "not_found", "message": "..."}}`.
 
 | Route | What it does |
 |---|---|
-| `POST /v1/documents` | upload a PDF (form fields `file`, `external_ref`, `grid_ref`); 202 |
-| `GET /v1/documents` | list, filtered by `external_ref`, `grid_ref`, `status` |
+| `PUT /v1/offers/{ref}` | create or update an offer: `title`, `skills`, `alerts`, optional `criteria` and `settings`; rescores its CVs when the grid changes |
+| `GET /v1/offers/{ref}` | the offer and its latest grid |
+| `DELETE /v1/offers/{ref}` | erase the offer and every CV sent for it |
+| `GET /v1/offers/{ref}/ranking` | the offer's CVs, best final score first, with missing core skills |
+| `POST /v1/documents` | upload a PDF (form fields `file`, `offer_ref` required, `external_ref`); 202, or 404 `offer_not_found` |
+| `GET /v1/documents` | list, filtered by `offer_ref`, `external_ref`, `status` |
 | `GET /v1/documents/{id}` | status, full text and lines with sections, offsets and boxes |
 | `GET /v1/documents/{id}/file` | the PDF |
 | `DELETE /v1/documents/{id}` | erase the PDF, text, scores and highlights |
-| `POST /v1/grids/suggest` | a starting grid from prioritised skills and warning words (not saved) |
-| `PUT /v1/grids/{ref}` | save a new grid version; rescores that grid's CVs |
-| `GET /v1/grids/{ref}` | the latest version |
-| `GET /v1/grids/{ref}/ranking` | that grid's CVs, best final score first, with missing core skills |
-| `POST /v1/documents/{id}/analyses` | score now (`grid_ref`, `analyzer`) |
+| `POST /v1/documents/{id}/analyses` | score now against the offer's latest grid (`analyzer`) |
 | `GET /v1/documents/{id}/analyses` | every score the CV got, across grid versions and analyzers |
 | `POST /v1/documents/{id}/highlights` | highlight a passage: `start` and `end` in the text, or a `line`; `points` 1 to 5, `author_ref`, `comment` |
-| `GET /v1/documents/{id}/highlights` | the passages highlighted for a grid |
+| `GET /v1/documents/{id}/highlights` | the passages highlighted |
 | `DELETE /v1/highlights/{id}` | remove one |
 | `GET /v1/documents/{id}/score` | auto, manual and final scores, with every point explained |
 | `GET /v1/analyzers` | the analyzers and their versions |
@@ -124,8 +138,8 @@ like `{"error": {"code": "not_found", "message": "..."}}`.
 Set `WEBHOOKS=client:url` and the engine POSTs `{"event": ..., "data": ...}`
 to that URL:
 
-- `document.processed`: `document_id`, `external_ref`, `status`
-- `analysis.done`: `document_id`, `external_ref`, `grid_ref`, `grid_version`, `analyzer`, `score`
+- `document.processed`: `document_id`, `external_ref`, `offer_ref`, `status`
+- `analysis.done`: `document_id`, `external_ref`, `offer_ref`, `grid_version`, `analyzer`, `score`
 
 With `WEBHOOK_SECRET` set, each call carries
 `X-CVA-Signature: sha256=<HMAC-SHA256 of the body>`. Delivery is best
@@ -159,10 +173,11 @@ The mapping:
 
 | RecruteHub | CV Analyzer |
 |---|---|
-| offer id | `grid_ref`; the offer's skills and priorities go through `/v1/grids/suggest`, then `PUT /v1/grids/{offer id}` |
-| candidate id | `external_ref`; the apply page sends the PDF to `POST /v1/documents` and keeps the returned id |
+| job offer (`job_offers`) | `PUT /v1/offers/{offer id}` with its `title` and `skills` (`language`, `priority`), each time the offer is saved |
+| offer deleted | `DELETE /v1/offers/{offer id}` |
+| candidate id | `external_ref`; the apply page sends the PDF to `POST /v1/documents` with `offer_ref` = the offer id, and keeps the returned id |
 | recruiter user id | `author_ref` on highlights |
-| candidate list | `GET /v1/grids/{offer id}/ranking` |
+| candidate list | `GET /v1/offers/{offer id}/ranking` |
 
 ## Configuration
 
@@ -192,7 +207,7 @@ TEST_DATABASE_URL=postgresql+psycopg://cva:cva@localhost:5432/cva_test python -m
 
 ## Adding an analyzer
 
-An analyzer takes the CV's lines, a grid's criteria and settings, and returns
+An analyzer takes the CV's lines, its offer's grid criteria and settings, and returns
 a score out of 100 with its details (`analysis/analyzers.py`). Register it in
 `ANALYZERS` and it is available through `POST /v1/documents/{id}/analyses`
 with `"analyzer": "<name>"`, beside the keyword one, so the two can be

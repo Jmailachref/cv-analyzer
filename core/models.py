@@ -1,4 +1,4 @@
-"""Tables. The engine knows nothing about offers or candidates: callers pass opaque references."""
+"""Tables. Offers and candidates live in the caller (RecruteHub); here they are references."""
 from __future__ import annotations
 
 import uuid
@@ -42,10 +42,10 @@ class Document(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     client_id: Mapped[str] = mapped_column(String(64), index=True)
+    # Every CV is sent for one offer, and scored with that offer's grid.
+    offer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("offers.id", ondelete="CASCADE"), index=True)
     # The caller's id for this CV (RecruteHub: the candidate).
     external_ref: Mapped[str | None] = mapped_column(String(200), index=True)
-    # The grid this CV is scored with as soon as it is read (RecruteHub: the offer).
-    grid_ref: Mapped[str | None] = mapped_column(String(200), index=True)
     filename: Mapped[str] = mapped_column(String(255))
     size: Mapped[int] = mapped_column(Integer)
     sha256: Mapped[str] = mapped_column(String(64))
@@ -60,6 +60,7 @@ class Document(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    offer: Mapped[Offer] = relationship(back_populates="documents")
     lines: Mapped[list[DocumentLine]] = relationship(
         back_populates="document", cascade="all, delete-orphan", order_by="DocumentLine.n", passive_deletes=True
     )
@@ -84,23 +85,40 @@ class DocumentLine(Base):
     document: Mapped[Document] = relationship(back_populates="lines")
 
 
-class Grid(Base):
-    """One version of a scoring grid. Saving a grid adds a version; old analyses keep theirs."""
+class Offer(Base):
+    """A job offer, as the caller defines it (RecruteHub: job_offers). Its grid is versioned apart."""
 
-    __tablename__ = "grids"
-    __table_args__ = (
-        UniqueConstraint("client_id", "external_ref", "version", name="uq_grids_version"),
-        Index("ix_grids_lookup", "client_id", "external_ref", "version"),
-    )
+    __tablename__ = "offers"
+    __table_args__ = (UniqueConstraint("client_id", "external_ref", name="uq_offers_ref"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     client_id: Mapped[str] = mapped_column(String(64), index=True)
-    # The caller's id for what the grid scores against (RecruteHub: the offer).
+    # The caller's id for the offer (RecruteHub: job_offers.id).
     external_ref: Mapped[str] = mapped_column(String(200))
+    title: Mapped[str] = mapped_column(String(255))
+    # As the caller ranks them: [{"name": "python", "priority": 1}, ...]; the grid is built from them.
+    skills: Mapped[list] = mapped_column(Json)
+    alerts: Mapped[list] = mapped_column(Json)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    documents: Mapped[list[Document]] = relationship(back_populates="offer", passive_deletes=True)
+
+
+class Grid(Base):
+    """One version of an offer's scoring grid. A change adds a version; old analyses keep theirs."""
+
+    __tablename__ = "grids"
+    __table_args__ = (UniqueConstraint("offer_id", "version", name="uq_grids_version"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    offer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("offers.id", ondelete="CASCADE"), index=True)
     version: Mapped[int] = mapped_column(Integer)
     criteria: Mapped[list] = mapped_column(Json)
     settings: Mapped[dict] = mapped_column(Json)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    offer: Mapped[Offer] = relationship()
 
 
 class Analysis(Base):
@@ -119,7 +137,7 @@ class Analysis(Base):
 
 
 class Highlight(Base):
-    """A passage a recruiter marked as worth points. Tied to the grid's reference, not a version."""
+    """A passage a recruiter marked as worth points, for the CV's offer whatever the grid version."""
 
     __tablename__ = "highlights"
     __table_args__ = (
@@ -129,7 +147,6 @@ class Highlight(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
-    grid_ref: Mapped[str] = mapped_column(String(200))
     author_ref: Mapped[str] = mapped_column(String(200))
     start: Mapped[int] = mapped_column(Integer)
     end: Mapped[int] = mapped_column(Integer)

@@ -24,10 +24,8 @@ SWEEP_EVERY_S = 60
 STALE_PROCESSING = timedelta(minutes=10)
 
 
-def latest_grid(session, client_id: str, ref: str) -> Grid | None:
-    return session.scalar(
-        select(Grid).where(Grid.client_id == client_id, Grid.external_ref == ref).order_by(Grid.version.desc()).limit(1)
-    )
+def latest_grid(session, offer_id: uuid.UUID) -> Grid | None:
+    return session.scalar(select(Grid).where(Grid.offer_id == offer_id).order_by(Grid.version.desc()).limit(1))
 
 
 def analyze(session, document: Document, grid: Grid, analyzer: str = DEFAULT_ANALYZER) -> Analysis:
@@ -51,7 +49,7 @@ def analyze(session, document: Document, grid: Grid, analyzer: str = DEFAULT_ANA
         {
             "document_id": str(document.id),
             "external_ref": document.external_ref,
-            "grid_ref": grid.external_ref,
+            "offer_ref": grid.offer.external_ref,
             "grid_version": grid.version,
             "analyzer": engine.name,
             "score": result.score,
@@ -91,18 +89,21 @@ def process_extract(document_id: uuid.UUID) -> None:
         webhooks.send(
             document.client_id,
             "document.processed",
-            {"document_id": str(document.id), "external_ref": document.external_ref, "status": document.status},
+            {
+                "document_id": str(document.id),
+                "external_ref": document.external_ref,
+                "offer_ref": document.offer.external_ref,
+                "status": document.status,
+            },
         )
-        if document.status == "ready" and document.grid_ref:
-            grid = latest_grid(session, document.client_id, document.grid_ref)
-            if grid is not None:
-                analyze(session, document, grid)
+        if document.status == "ready":
+            analyze(session, document, latest_grid(session, document.offer_id))
 
 
 def process_analyze(document_id: uuid.UUID, grid_id: uuid.UUID) -> None:
     with SessionLocal() as session:
         document, grid = session.get(Document, document_id), session.get(Grid, grid_id)
-        if document is None or grid is None or document.status != "ready":
+        if document is None or grid is None or document.status != "ready" or grid.offer_id != document.offer_id:
             return
         analyze(session, document, grid)
 
