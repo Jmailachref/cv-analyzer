@@ -1,4 +1,5 @@
 # Local stack: Postgres, Redis, S3 storage (SeaweedFS), the API on :8100 and one worker.
+# The API creates the bucket on the first upload.
 #   docker compose up -d --build
 #   open http://localhost:8100/docs
 x-app: &app
@@ -18,8 +19,8 @@ x-app: &app
       condition: service_healthy
     redis:
       condition: service_started
-    s3-setup:
-      condition: service_completed_successfully
+    s3:
+      condition: service_started
 
 services:
   postgres:
@@ -44,18 +45,6 @@ services:
     volumes:
       - s3data:/data
       - ./s3/s3.json:/etc/seaweedfs/s3.json:ro
-
-  s3-setup:
-    image: chrislusf/seaweedfs:3.97
-    depends_on: [s3]
-    entrypoint:
-      - sh
-      - -c
-      - |
-        until echo 's3.bucket.list' | weed shell -master=s3:9333 2>/dev/null | grep -q cv-analyzer; do
-          echo 's3.bucket.create -name cv-analyzer' | weed shell -master=s3:9333 >/dev/null 2>&1
-          sleep 2
-        done
 
   migrate:
     <<: *app

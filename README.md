@@ -35,7 +35,7 @@ curl -H "Authorization: Bearer dev-key" -F file=@cv.pdf -F offer_ref=offer-1 -F 
 | worker | reads PDFs (pdfplumber, Tesseract OCR for scans) and scores them, from a Redis queue |
 | postgres | offers and their grids, documents, lines, analyses, highlights |
 | redis | the job queue |
-| s3, s3-setup | SeaweedFS, S3-compatible storage for the PDFs (bucket `cv-analyzer`) |
+| s3 | SeaweedFS, S3-compatible storage for the PDFs (bucket `cv-analyzer`, created on the first upload) |
 | migrate | runs `alembic upgrade head`, then exits |
 
 ## How a CV is scored

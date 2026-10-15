@@ -22,6 +22,20 @@ def _s3():
     )
 
 
+@lru_cache
+def _bucket() -> str:
+    """The bucket, created on first use if it does not exist yet."""
+    from botocore.exceptions import ClientError
+
+    try:
+        _s3().head_bucket(Bucket=settings.s3_bucket)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") not in ("404", "NoSuchBucket"):
+            raise
+        _s3().create_bucket(Bucket=settings.s3_bucket)
+    return settings.s3_bucket
+
+
 def _local(key: str) -> Path:
     path = Path(settings.storage_dir) / key
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -30,7 +44,7 @@ def _local(key: str) -> Path:
 
 def put(key: str, data: bytes) -> None:
     if settings.storage == "s3":
-        _s3().put_object(Bucket=settings.s3_bucket, Key=key, Body=data, ContentType="application/pdf")
+        _s3().put_object(Bucket=_bucket(), Key=key, Body=data, ContentType="application/pdf")
     else:
         _local(key).write_bytes(data)
 
