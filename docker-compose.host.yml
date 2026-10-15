@@ -1,0 +1,27 @@
+# For Docker hosts where containers cannot reach each other over the compose network
+# (seen in some GitHub Codespaces): every service shares the host's network instead.
+#   docker compose -f docker-compose.yml -f docker-compose.host.yml up -d --build
+#   the API is then on port 8000
+x-host-env: &host-env
+  DATABASE_URL: postgresql+psycopg://cva:cva@localhost:5432/cva
+  REDIS_URL: redis://localhost:6379/0
+  S3_URL: http://localhost:8333
+
+services:
+  postgres:
+    network_mode: host
+  redis:
+    network_mode: host
+  s3:
+    network_mode: host
+    command: ["server", "-ip=127.0.0.1", "-dir=/data", "-s3", "-s3.config=/etc/seaweedfs/s3.json", "-filer"]
+  migrate:
+    network_mode: host
+    environment: *host-env
+  api:
+    network_mode: host
+    ports: !reset []
+    environment: *host-env
+  worker:
+    network_mode: host
+    environment: *host-env
