@@ -16,7 +16,9 @@ from core.config import settings
 
 @lru_cache
 def get_redis() -> redis.Redis:
-    return redis.Redis.from_url(settings.redis_url)
+    # redis-py 8 times reads out after 5 s by default, as long as dequeue blocks:
+    # leave room for the blocking pop.
+    return redis.Redis.from_url(settings.redis_url, socket_timeout=30, socket_connect_timeout=5)
 
 
 def enqueue(job_type: str, **payload: uuid.UUID | str) -> None:
@@ -25,6 +27,6 @@ def enqueue(job_type: str, **payload: uuid.UUID | str) -> None:
 
 
 def dequeue(timeout: int = 5) -> dict | None:
-    """Block up to timeout seconds for the next job."""
+    """Block up to timeout seconds (well under the socket timeout) for the next job."""
     item = get_redis().brpop([settings.queue_name], timeout=timeout)
     return json.loads(item[1]) if item else None

@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import logging
 import signal
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import redis
 from sqlalchemy import select, update
 
 from analysis import extract as extracting
@@ -149,7 +151,12 @@ def main() -> None:
             if count := recover_lost_jobs():
                 log.warning("requeued %s lost documents", count)
             last_sweep = now
-        job = dequeue(timeout=5)
+        try:
+            job = dequeue(timeout=5)
+        except redis.RedisError:
+            log.exception("queue unreachable, retrying")
+            time.sleep(2)
+            continue
         if job is None:
             continue
         try:
